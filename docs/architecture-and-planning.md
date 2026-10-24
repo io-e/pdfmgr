@@ -219,3 +219,11 @@ The installer (L5) must ship `LICENSE` and the `licenses/` folder.
 - `PageOps::merge` and `PageOps::rotate` take a `Progress` callback. Returning `false` cancels the operation. The callback is checked between pages, and while QPDF writes objects, through a `QPDFWriter` progress reporter that throws to stop the write. Units are the page count plus 100 write percent.
 - On cancel the result is `{ok=false, error="canceled"}`. Outputs are only written (atomically) once the whole operation succeeds, so nothing partial is left on disk. The inputs, including an in-place target (`in == out`), are untouched.
 - In the GUI, "Rotate" and "Merge with…" now pass the task's progress and cancel hook. Esc and the Cancel button stop them.
+
+## Drag and drop (feat/drag-drop)
+
+- **Reorder:** you can drag one or more thumbnails (multi-select with Ctrl or Shift) to a new position. `ThumbList` never moves its items itself. It asks for a `PageOps::reorder` with the order from `PageOps::moveOrder(n, pages, dropBefore)`. The document is rewritten by QPDF and the strip is rebuilt, so the strip always matches the file.
+- **Merge:** you can drop PDF files from a file manager onto the thumbnail strip. They are inserted at the drop position with `PageOps::insertFiles`. When dropped after the last page, the files are appended with a plain merge, which keeps forms and bookmarks. Inserting in the middle is merge plus reorder, and bookmarks are not kept in that case.
+- **Open:** PDFs dropped anywhere else in the window (page view, tab bar, empty window) open in new tabs.
+- All of these are ignored while the tab is busy.
+- Tests: `moveOrder` and `insertFiles` unit tests. The `gui_dnd` ctest (`pdfgui --dnd-test`) sends real DragEnter, DragMove and Drop events with a file URL to the thumbnail strip, then moves page 1 to the end.

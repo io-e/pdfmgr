@@ -29,6 +29,12 @@ public:
                  const QString& out = {}, const QList<int>& affected = {}, int jumpTo = -1);
     DocumentTab* tabById(quint64 id) const;
     void cancelCurrentTask();
+    // Drag and drop: reorder pages / insert dropped PDFs into tab `t`.
+    bool movePages(DocumentTab* t, const QList<int>& pages, int dropBefore);
+    bool insertFiles(DocumentTab* t, const QStringList& files, int dropBefore);
+protected:
+    void dragEnterEvent(QDragEnterEvent* e) override;
+    void dropEvent(QDropEvent* e) override;
 private:
     // op(in, out, progress): progress is the task's cancel/progress hook.
     using CancellableOp = std::function<pdfcore::OpResult(const QString& in, const QString& out, const pdfcore::PageOps::Progress&)>;
