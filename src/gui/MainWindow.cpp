@@ -29,6 +29,7 @@
 #include <QUrl>
 #include "Document.h"
 #include "Version.h"
+#include "Logging.h"
 static constexpr int kPasswordAttempts = 3;
 using pdfcore::OpenError;
 using namespace pdfcore;
@@ -170,6 +171,7 @@ void MainWindow::buildActions() {
     m_search->setClearButtonEnabled(true);
     tb->addWidget(m_search);
     auto* help = menuBar()->addMenu(tr("&Help"));
+    add(help, tr("Open log folder…"), {}, [] { QDesktopServices::openUrl(QUrl::fromLocalFile(pdfcore::logDir())); }, false);
     add(help, tr("About…"), {}, [this] { showAbout(); }, false);
     auto* cancel = add(pages, tr("Cancel running task"), QKeySequence(Qt::Key_Escape), [this] { cancelCurrentTask(); }, false);
     Q_UNUSED(cancel);

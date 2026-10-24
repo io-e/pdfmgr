@@ -10,7 +10,10 @@
     { "name": "windows-msvc-release", "inherits": "release", "displayName": "Windows MSVC Release (vcpkg)",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": { "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-                          "VCPKG_TARGET_TRIPLET": "x64-windows" } }
+                          "VCPKG_TARGET_TRIPLET": "x64-windows",
+                          "CMAKE_C_FLAGS_RELEASE": "/O2 /Zi",
+                          "CMAKE_CXX_FLAGS_RELEASE": "/O2 /Zi",
+                          "CMAKE_EXE_LINKER_FLAGS_RELEASE": "/DEBUG /OPT:REF /OPT:ICF" } }
   ],
   "buildPresets": [
     { "name": "debug", "configurePreset": "debug" },

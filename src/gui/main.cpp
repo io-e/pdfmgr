@@ -9,6 +9,7 @@
 #include "ThumbList.h"
 #include "MainWindow.h"
 #include "DocumentTab.h"
+#include "Logging.h"
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QTimer>
@@ -22,6 +23,7 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     QApplication::setApplicationName("PDF Manager");
     QApplication::setApplicationVersion("0.1.0");
+    pdfcore::initLogging();
     QCommandLineParser p;
     p.addHelpOption(); p.addVersionOption();
     QCommandLineOption smoke("smoke-test", "Open files, render, then quit and report (CI).");

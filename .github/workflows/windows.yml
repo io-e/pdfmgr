@@ -88,6 +88,13 @@ jobs:
       # TODO: WiX/Inno Setup packaging and code signing
       - uses: actions/upload-artifact@v4
         with: { name: pdfmgr-windows, path: dist }
+      - name: Collect PDBs
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory pdbs | Out-Null
+          Get-ChildItem build/windows-msvc-release -Recurse -Filter *.pdb | Copy-Item -Destination pdbs/
+      - uses: actions/upload-artifact@v4
+        with: { name: pdfmgr-pdbs, path: pdbs }
 
   ubuntu:
     runs-on: ubuntu-24.04   # Qt 6.4, qpdf 11.9, static MuPDF 1.23
