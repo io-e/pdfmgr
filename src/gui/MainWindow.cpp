@@ -25,10 +25,21 @@
 #include <algorithm>
 #include <QToolButton>
 #include <QFile>
+#include <QDesktopServices>
+#include <QUrl>
 #include "Document.h"
+#include "Version.h"
+#include "Logging.h"
 static constexpr int kPasswordAttempts = 3;
 using pdfcore::OpenError;
 using namespace pdfcore;
+
+static bool isFileLockError(const QString& err) {
+    return err.contains("locked", Qt::CaseInsensitive)
+        || err.contains("in use", Qt::CaseInsensitive)
+        || err.contains("cannot move", Qt::CaseInsensitive)
+        || err.contains("cannot replace", Qt::CaseInsensitive);
+}
 
 MainWindow::MainWindow() {
     setWindowTitle("PDF Manager");
@@ -49,6 +60,23 @@ MainWindow::MainWindow() {
     });
     connect(&m_print, &PrintService::jobFinished, this, [this](quint64 id, bool ok, int code, QString err) {
         log(tr("Print #%1 %2 (exit %3) %4").arg(id).arg(ok ? tr("done") : tr("FAILED")).arg(code).arg(err.trimmed()));
+        if (!ok) {
+            QString msg;
+            if (err.contains("timeout", Qt::CaseInsensitive))
+                msg = tr("The print backend did not respond within the timeout period.\n"
+                         "The printer may be offline or busy.");
+            else if (err.contains("failed to start", Qt::CaseInsensitive))
+                msg = tr("Could not start the print backend.\n"
+                         "Please check that the application is correctly installed.");
+            else if (code != 0 && !err.trimmed().isEmpty())
+                msg = tr("The print backend exited with code %1:\n%2").arg(code).arg(err.trimmed());
+            else if (code != 0)
+                msg = tr("The print backend exited with code %1.\n"
+                         "The printer may not be available.").arg(code);
+            else
+                msg = tr("Printing failed:\n%1").arg(err.trimmed());
+            QMessageBox::warning(this, tr("Print failed"), msg);
+        }
     });
     m_progress = new QProgressBar; m_progress->setMaximumWidth(180); m_progress->setTextVisible(true); m_progress->hide();
     m_cancel = new QToolButton; m_cancel->setText(tr("Cancel")); m_cancel->hide();
@@ -149,6 +177,9 @@ void MainWindow::buildActions() {
     m_search = new QLineEdit; m_search->setPlaceholderText(tr("Search…")); m_search->setMaximumWidth(220);
     m_search->setClearButtonEnabled(true);
     tb->addWidget(m_search);
+    auto* help = menuBar()->addMenu(tr("&Help"));
+    add(help, tr("Open log folder…"), {}, [] { QDesktopServices::openUrl(QUrl::fromLocalFile(pdfcore::logDir())); }, false);
+    add(help, tr("About…"), {}, [this] { showAbout(); }, false);
     auto* cancel = add(pages, tr("Cancel running task"), QKeySequence(Qt::Key_Escape), [this] { cancelCurrentTask(); }, false);
     Q_UNUSED(cancel);
     connect(m_search, &QLineEdit::returnPressed, this, [this, last = std::make_shared<QString>()] {
@@ -219,7 +250,19 @@ void MainWindow::finishTask(quint64 jobId, bool ok, const QString& error, const 
     switch (op.kind) {
     case OpKind::ApplyToTab: {
         QString err;
-        if (!t->applyWorkingCopy(op.out, &err, op.affected)) { QFile::remove(op.out); QMessageBox::warning(this, tr("Operation failed"), err); return; }
+        while (!t->applyWorkingCopy(op.out, &err, op.affected)) {
+            if (isFileLockError(err)) {
+                auto btn = QMessageBox::warning(this, tr("File in use"),
+                    tr("The file appears to be locked by another process.\n%1\n\n"
+                       "Close other programs using this file and try again.").arg(err),
+                    QMessageBox::Retry | QMessageBox::Cancel);
+                if (btn == QMessageBox::Retry) { err.clear(); continue; }
+            } else {
+                QMessageBox::warning(this, tr("Operation failed"), err);
+            }
+            QFile::remove(op.out);
+            return;
+        }
         if (op.jumpTo >= 0) t->setPage(op.jumpTo);
         statusBar()->showMessage(tr("%1 done").arg(op.label), 3000);
         break;
@@ -317,8 +360,19 @@ void MainWindow::save(bool as) {
     QString path = t->originalPath();
     if (as) { path = QFileDialog::getSaveFileName(this, tr("Save as"), path, tr("PDF (*.pdf)")); if (path.isEmpty()) return; }
     QString err;
-    if (!t->saveTo(path, &err)) QMessageBox::warning(this, tr("Save"), err);
-    else statusBar()->showMessage(tr("Saved %1").arg(path), 3000);
+    while (!t->saveTo(path, &err)) {
+        if (isFileLockError(err)) {
+            auto btn = QMessageBox::warning(this, tr("File in use"),
+                tr("Cannot save — the file appears to be locked.\n%1\n\n"
+                   "Close other programs using this file and try again.").arg(err),
+                QMessageBox::Retry | QMessageBox::Cancel);
+            if (btn == QMessageBox::Retry) { err.clear(); continue; }
+        } else {
+            QMessageBox::warning(this, tr("Save"), err);
+        }
+        return;
+    }
+    statusBar()->showMessage(tr("Saved %1").arg(path), 3000);
 }
 void MainWindow::print() {
     auto* t = current(); if (!t || t->isBusy()) return;
@@ -328,6 +382,24 @@ void MainWindow::print() {
     j.file = t->workingPath(); // PrintService copies it to a temp PDF first
     j.password = t->password();
     m_print.enqueue(j);
+}
+
+void MainWindow::showAbout() {
+    QString text = tr(
+        "<h3>PDF Manager %1</h3>"
+        "<p>Commit: %2<br>Built: %3</p>"
+        "<table>"
+        "<tr><td>Qt:</td><td>%4</td></tr>"
+        "<tr><td>MuPDF:</td><td>%5</td></tr>"
+        "<tr><td>QPDF:</td><td>%6</td></tr>"
+        "<tr><td>Print backend:</td><td>%7</td></tr>"
+        "</table>"
+        "<p>Licensed under AGPLv3.</p>")
+        .arg(QStringLiteral(PDFMGR_VERSION), QStringLiteral(PDFMGR_GIT_HASH),
+             QStringLiteral(PDFMGR_BUILD_DATE), qVersion(),
+             pdfcore::mupdfVersion(), pdfcore::qpdfVersion(),
+             m_print.backend().name());
+    QMessageBox::about(this, tr("About PDF Manager"), text);
 }
 
 // Tabs are child widgets, which ~QWidget would delete only after the members

@@ -51,6 +51,7 @@ private:
     void mergeWith();
     void save(bool as);
     void print();
+    void showAbout();
     void log(const QString& s);
     pdfcore::JobQueue m_jobs;
     pdfcore::PrintService m_print;
