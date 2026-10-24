@@ -7,25 +7,43 @@
 namespace pdfcore {
 
 std::shared_ptr<Document> Document::open(const QString& path, QString* error) {
+    return open(path, QString(), error, nullptr);
+}
+
+std::shared_ptr<Document> Document::open(const QString& path, const QString& password,
+                                         QString* error, OpenError* code) {
+    if (code) *code = OpenError::None;
     ScopedClone ctx;
     std::shared_ptr<Document> d(new Document);
     d->m_path = path;
     QByteArray p = path.toUtf8();
+    QByteArray pw = password.toUtf8();
     fz_document* doc = nullptr;
     int n = 0;
+    OpenError kind = OpenError::None;
+    bool encrypted = false;
     fz_var(doc);
+    fz_var(kind);
     fz_try(ctx) {
         doc = fz_open_document(ctx, p.constData());
-        if (fz_needs_password(ctx, doc)) fz_throw(ctx, FZ_ERROR_GENERIC, "document is password protected");
+        // MuPDF already tried the empty user password, so owner-only files pass.
+        if (fz_needs_password(ctx, doc)) {
+            encrypted = true;
+            if (pw.isEmpty()) { kind = OpenError::NeedsPassword; fz_throw(ctx, FZ_ERROR_GENERIC, "document is password protected"); }
+            if (!fz_authenticate_password(ctx, doc, pw.constData())) { kind = OpenError::WrongPassword; fz_throw(ctx, FZ_ERROR_GENERIC, "incorrect password"); }
+        }
         n = fz_count_pages(ctx, doc);
     }
     fz_catch(ctx) {
+        if (code) *code = kind == OpenError::None ? OpenError::Other : kind;
         if (error) *error = QString::fromUtf8(fz_caught_message(ctx));
         if (doc) fz_drop_document(ctx, doc);
         return nullptr;
     }
     d->m_doc = doc;
     d->m_pageCount = n;
+    d->m_encrypted = encrypted;
+    if (encrypted) d->m_password = password;
     return d;
 }
 

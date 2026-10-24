@@ -21,6 +21,9 @@
 #include <algorithm>
 #include <QToolButton>
 #include <QFile>
+#include "Document.h"
+static constexpr int kPasswordAttempts = 3;
+using pdfcore::OpenError;
 using namespace pdfcore;
 
 MainWindow::MainWindow() {
@@ -63,9 +66,27 @@ void MainWindow::log(const QString& s) { m_jobLog->appendPlainText(QTime::curren
 DocumentTab* MainWindow::current() const { return qobject_cast<DocumentTab*>(m_tabs->currentWidget()); }
 
 bool MainWindow::openFile(const QString& path) {
-    QString err;
-    auto* t = DocumentTab::open(path, &m_jobs, &err);
-    if (!t) { QMessageBox::warning(this, tr("Open"), tr("Cannot open %1:\n%2").arg(path, err)); return false; }
+    QString err, password;
+    OpenError code = OpenError::None;
+    DocumentTab* t = DocumentTab::open(path, &m_jobs, password, &err, &code);
+    // Encrypted with a user password: masked prompt, up to kPasswordAttempts tries.
+    for (int attempt = 0; !t && attempt < kPasswordAttempts
+         && (code == OpenError::NeedsPassword || code == OpenError::WrongPassword); ++attempt) {
+        QString prompt = tr("\"%1\" is password protected.\nPassword:").arg(QFileInfo(path).fileName());
+        if (code == OpenError::WrongPassword)
+            prompt = tr("Incorrect password (%1 of %2 attempts used).\n").arg(attempt).arg(kPasswordAttempts) + prompt;
+        bool ok = false;
+        password = QInputDialog::getText(this, tr("Password required"), prompt, QLineEdit::Password, {}, &ok);
+        if (!ok) return false; // user canceled: no error box
+        t = DocumentTab::open(path, &m_jobs, password, &err, &code);
+    }
+    password.fill(QChar(0)); password.clear();
+    if (!t) {
+        if (code == OpenError::WrongPassword || code == OpenError::NeedsPassword)
+            err = tr("Incorrect password. The document was not opened.");
+        QMessageBox::warning(this, tr("Open"), tr("Cannot open %1:\n%2").arg(path, err));
+        return false;
+    }
     connect(t, &DocumentTab::status, statusBar(), [this](QString m) { statusBar()->showMessage(m); });
     connect(t, &DocumentTab::stateChanged, this, [this, t] {
         int i = m_tabs->indexOf(t);
@@ -160,8 +181,10 @@ bool MainWindow::runTask(DocumentTab* t, const QString& label, OpKind kind, Task
         }, Qt::QueuedConnection);
         return !token.isCancelled();
     };
-    quint64 id = m_jobs.submit([fn, progress, token] {
+    const QString password = t->password();
+    quint64 id = m_jobs.submit([fn, progress, token, password] {
         if (token.isCancelled()) return QVariant(QVariantMap{{"ok", false}, {"error", QStringLiteral("canceled")}});
+        PageOps::ScopedPassword pw(password); // unlocks the tab's encrypted working copy for QPDF
         OpResult r = fn(progress);
         return QVariant(QVariantMap{{"ok", r.ok}, {"error", r.error}, {"outputs", r.outputs}});
     }, tabId);
@@ -264,6 +287,7 @@ void MainWindow::print() {
     if (d.exec() != QDialog::Accepted) return;
     PrintJob j = d.job();
     j.file = t->workingPath(); // PrintService copies it to a temp PDF first
+    j.password = t->password();
     m_print.enqueue(j);
 }
 

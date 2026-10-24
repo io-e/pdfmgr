@@ -85,17 +85,26 @@ DocumentTab::~DocumentTab() {
 }
 
 DocumentTab* DocumentTab::open(const QString& path, JobQueue* jobs, QString* error, QWidget* parent) {
+    return open(path, jobs, QString(), error, nullptr, parent);
+}
+
+DocumentTab* DocumentTab::open(const QString& path, JobQueue* jobs, const QString& password,
+                               QString* error, OpenError* code, QWidget* parent) {
+    if (code) *code = OpenError::None;
     auto* t = new DocumentTab(jobs, parent);
+    t->m_password = password;
     t->m_original = QFileInfo(path).absoluteFilePath();
     t->m_working = QDir::temp().filePath("pdfmgr-work-" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".pdf");
     if (!QFile::copy(path, t->m_working)) { if (error) *error = "cannot copy to working file"; t->m_working.clear(); delete t; return nullptr; }
-    if (!t->load(t->m_working, error)) { delete t; return nullptr; }
+    if (!t->load(t->m_working, error, {}, false, code)) { delete t; return nullptr; }
     return t;
 }
 
-bool DocumentTab::load(const QString& file, QString* error, const QList<int>& affected, bool keepThumbs) {
-    auto d = Document::open(file, error);
+bool DocumentTab::load(const QString& file, QString* error, const QList<int>& affected, bool keepThumbs,
+                       OpenError* code) {
+    auto d = Document::open(file, m_password, error, code);
     if (!d) return false;
+    m_password = d->password(); // dropped if the file no longer needs one
     keepThumbs = keepThumbs && m_thumbReady.size() == d->pageCount();
     m_doc = d;
     m_hits.clear(); m_hitIndex = -1;
@@ -232,7 +241,7 @@ void DocumentTab::findNext() {
 bool DocumentTab::applyWorkingCopy(const QString& newFile, QString* error, const QList<int>& affectedPages) {
     {   // Validate before touching anything; the probe's handle is closed right away.
         QString perr;
-        auto probe = Document::open(newFile, &perr);
+        auto probe = Document::open(newFile, m_password, &perr);
         if (!probe) { if (error) *error = tr("operation result is not a valid PDF: %1").arg(perr); return false; }
     }
     releaseDocument(); // this tab's jobs only; closes our handle on m_working

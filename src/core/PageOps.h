@@ -13,6 +13,18 @@ namespace pdfcore {
 struct OpResult { bool ok = false; QString error; QStringList outputs; };
 
 namespace PageOps {
+// Password used to open encrypted inputs on the current thread (QPDF
+// processInputSource). Inputs without a user password ignore it. RAII; never
+// logged. Encrypted inputs keep their encryption in in-place outputs.
+class ScopedPassword {
+public:
+    explicit ScopedPassword(const QString& password);
+    ~ScopedPassword();
+    ScopedPassword(const ScopedPassword&) = delete;
+    ScopedPassword& operator=(const ScopedPassword&) = delete;
+private:
+    QByteArray m_prev;
+};
 int pageCount(const QString& in, QString* error = nullptr);
 OpResult merge(const QStringList& inputs, const QString& out);
 // Progress callback: (units done, units total). Return false to cancel.
@@ -30,6 +42,8 @@ OpResult reorder(const QString& in, const QList<int>& newOrder, const QString& o
 OpResult rotate(const QString& in, const QList<int>& pages, int degrees, const QString& out);
 // Rewrite (e.g. to save a temp copy for printing).
 OpResult copy(const QString& in, const QString& out);
+// Rewrite without encryption (temp copy for printing an unlocked file).
+OpResult copyDecrypted(const QString& in, const QString& out);
 // Page /Rotate values (normalised 0..270), for tests/UI.
 QList<int> rotations(const QString& in, QString* error = nullptr);
 // Parse "1-3,5" (1-based) into 0-based indexes within [0,n).

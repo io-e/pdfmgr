@@ -42,10 +42,12 @@ void PrintService::startNext() {
         if (!t.open()) { finishCurrent(false, -1, "cannot create temp file"); return; }
         tmpPath = t.fileName();
     }
-    auto r = PageOps::copy(m_current.job.file, tmpPath);
+    OpResult r;
+    if (m_current.job.password.isEmpty()) r = PageOps::copy(m_current.job.file, tmpPath);
+    else { PageOps::ScopedPassword pw(m_current.job.password); r = PageOps::copyDecrypted(m_current.job.file, tmpPath); }
     if (!r.ok) { deleteTemp(tmpPath); finishCurrent(false, -1, "temp save failed: " + r.error); return; }
     m_currentTemp = tmpPath;
-    PrintJob j = m_current.job; j.file = tmpPath;
+    PrintJob j = m_current.job; j.file = tmpPath; j.password.clear();
     // 2. Launch backend asynchronously.
     m_proc = new QProcess(this);
     m_timer = new QTimer(this);
