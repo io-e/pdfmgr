@@ -3,6 +3,8 @@
 #include <memory>
 #include <QSet>
 #include <QVector>
+#include <optional>
+#include "CancelToken.h"
 #include "Document.h"
 #include "JobQueue.h"
 class QListWidget; class QLabel; class QScrollArea; class QTimer;
@@ -31,6 +33,16 @@ public:
     // count is unchanged (empty = all).
     bool applyWorkingCopy(const QString& newFile, QString* error, const QList<int>& affectedPages = {});
     quint64 tabId() const { return m_tabId; }
+    // One background task (page operation or search) per tab at a time.
+    // While busy, conflicting actions must be disabled (see MainWindow).
+    bool isBusy() const { return m_task.has_value(); }
+    QString taskLabel() const { return m_task ? m_task->label : QString(); }
+    pdfcore::CancelToken beginTask(const QString& label, quint64 jobId = 0);
+    void setTaskJob(quint64 jobId) { if (m_task) m_task->job = jobId; }
+    void endTask();
+    void cancelTask(); // cooperative; the task's result is then discarded
+    bool taskCanceled() const { return m_task && m_task->token.isCancelled(); }
+    void reportProgress(int done, int total) { emit progress(done, total); }
     bool saveTo(const QString& path, QString* error);
     ~DocumentTab() override;
 protected:
@@ -38,6 +50,8 @@ protected:
 signals:
     void stateChanged();
     void status(QString msg);
+    void busyChanged(bool busy);
+    void progress(int done, int total);
 private:
     DocumentTab(pdfcore::JobQueue* jobs, QWidget* parent);
     bool load(const QString& file, QString* error, const QList<int>& affected = {}, bool keepThumbs = false);
@@ -46,6 +60,7 @@ private:
     void scheduleThumbs();
     void requestVisibleThumbs();
     void releaseDocument();
+    void onSearchDone(const QVariantMap& m);
     static constexpr int kThumbBatch = 8;       // pages per job
     static constexpr int kMaxThumbBatches = 3;  // queued/running batches per tab
     static constexpr int kThumbMargin = 6;      // pages prefetched around the viewport
@@ -61,6 +76,8 @@ private:
     QSet<int> m_thumbQueued;
     int m_thumbBatches = 0;
     QTimer* m_thumbTimer;
+    struct Task { QString label; pdfcore::CancelToken token; quint64 job = 0; };
+    std::optional<Task> m_task;
     QList<pdfcore::SearchHit> m_hits;
     int m_hitIndex = -1;
     QListWidget* m_thumbs;

@@ -5,6 +5,7 @@
 #include <QSizeF>
 #include <QList>
 #include <memory>
+#include <functional>
 #include <mutex>
 #include <atomic>
 #include "CancelToken.h"
@@ -27,7 +28,11 @@ public:
     QImage render(int page, double zoom, const CancelToken* cancel = nullptr) const;
     QImage thumbnail(int page, int maxSide = 160, const CancelToken* cancel = nullptr) const;
     QString pageText(int page) const;
-    QList<SearchHit> search(const QString& needle, int maxHitsPerPage = 64) const;
+    // Searches every page. `cancel` stops early (partial hits are returned);
+    // `progress(pagesDone, pageCount)` is called from the calling thread.
+    QList<SearchHit> search(const QString& needle, int maxHitsPerPage = 64,
+                            const CancelToken* cancel = nullptr,
+                            const std::function<void(int, int)>& progress = {}) const;
 private:
     Document() = default;
     QString m_path;

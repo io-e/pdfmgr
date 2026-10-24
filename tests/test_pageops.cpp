@@ -35,6 +35,40 @@ TEST_CASE("split", "[pageops]") {
     CHECK(PageOps::pageCount(r.outputs[2]) == 1);
     CHECK(firstLine(r.outputs[2], 0) == "Page 5 Charlie");
 }
+TEST_CASE("split streams a large document and reports progress", "[pageops][split]") {
+    // ~600 pages: each output is written as soon as it is built.
+    const QString big = tmpFile("big-split.pdf");
+    fixtures::writePdf(big, 600, "Big");
+    const QString prefix = tmpFile("bigsplit");
+    QList<int> seen; int total = -1;
+    auto r = PageOps::split(big, prefix, 25, [&](int d, int t) {
+        total = t;
+        // Every file reported done is already complete on disk.
+        if (d > 0) CHECK(QFile::exists(QStringLiteral("%1-%2.pdf").arg(prefix).arg(d)));
+        seen << d; return true;
+    });
+    REQUIRE(r.ok);
+    CHECK(total == 24);
+    REQUIRE(r.outputs.size() == 24);
+    CHECK(seen.size() == 25); CHECK(seen.first() == 0); CHECK(seen.last() == 24);
+    CHECK(PageOps::pageCount(r.outputs[0]) == 25);
+    CHECK(firstLine(r.outputs[23], 24) == "Page 600 Big");
+    requireValid(r.outputs[11]);
+}
+TEST_CASE("split cancel removes partial outputs", "[pageops][split]") {
+    const QString prefix = tmpFile("cancelsplit");
+    auto r = PageOps::split(path("five.pdf"), prefix, 1, [](int d, int) { return d < 2; });
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.contains("canceled"));
+    for (int i = 1; i <= 5; ++i) CHECK_FALSE(QFile::exists(QStringLiteral("%1-%2.pdf").arg(prefix).arg(i)));
+}
+TEST_CASE("split refuses to overwrite its input", "[pageops][split]") {
+    const QString in = tmpFile("self-1.pdf");
+    fixtures::writePdf(in, 2);
+    auto r = PageOps::split(in, tmpFile("self"), 2);
+    CHECK_FALSE(r.ok);
+    CHECK(PageOps::pageCount(in) == 2);
+}
 TEST_CASE("extract", "[pageops]") {
     auto out = tmpFile("extract.pdf");
     auto r = PageOps::extract(path("objstm.pdf"), {4, 1}, out);

@@ -14,9 +14,11 @@ TEST_CASE("Sumatra settings string", "[print][sumatra]") {
     CHECK(SumatraBackend::settingsString(j) == "shrink");
     j.pageRange = "1-3, 5"; j.scaling = PrintJob::Scaling::Fit; j.orientation = PrintJob::Orientation::Landscape;
     j.duplex = PrintJob::Duplex::DuplexLong; j.color = PrintJob::Color::Monochrome; j.paper = "A4"; j.bin = 2; j.copies = 3;
-    CHECK(SumatraBackend::settingsString(j) == "1-3,5,fit,landscape,duplexlong,monochrome,paper=A4,bin=2,3x");
+    CHECK(SumatraBackend::settingsString(j) == "1-3,5,fit,duplexlong,monochrome,paper=A4,bin=2,3x");
     PrintJob k; k.pageRange = "odd"; k.scaling = PrintJob::Scaling::NoScale; k.duplex = PrintJob::Duplex::Simplex; k.color = PrintJob::Color::Color;
     CHECK(SumatraBackend::settingsString(k) == "odd,noscale,simplex,color");
+    PrintJob p; p.orientation = PrintJob::Orientation::Portrait;
+    CHECK(SumatraBackend::settingsString(p) == "shrink,portrait,disable-auto-rotation");
 }
 TEST_CASE("Sumatra arguments", "[print][sumatra]") {
     SumatraBackend b("C:/App/SumatraPDF.exe");

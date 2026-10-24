@@ -1,3 +1,6 @@
+#include <QSignalSpy>
+#include "JobQueue.h"
+#include "CancelToken.h"
 #include <catch2/catch_test_macros.hpp>
 #include "Document.h"
 #include "Fixtures.h"
@@ -54,4 +57,23 @@ TEST_CASE("concurrent rendering with cloned contexts", "[document][threads]") {
     for (int i = 0; i < 8; ++i) ts.emplace_back([&, i] { for (int k = 0; k < 5; ++k) if (!d->render((i + k) % 5, 0.5).isNull()) ++ok; });
     for (auto& t : ts) t.join();
     CHECK(ok == 40);
+}
+
+TEST_CASE("search on the JobQueue: progress and cancel", "[document][jobqueue]") {
+    const QString f = fixtures::tmpFile("search-big.pdf");
+    fixtures::writePdf(f, 200, "Needle");
+    QString err; auto d = Document::open(f, &err); REQUIRE(d);
+    int last = -1;
+    auto hits = d->search("Needle", 64, nullptr, [&](int done, int total) { CHECK(total == 200); last = done; });
+    CHECK(hits.size() == 200);
+    CHECK(last == 200);
+    CancelToken c; c.cancel();
+    CHECK(d->search("Needle", 64, &c).isEmpty());
+
+    JobQueue q;
+    CancelToken token;
+    QSignalSpy spy(&q, &JobQueue::finished);
+    q.submit([d, token] { return QVariant(int(d->search("Needle", 64, &token).size())); }, 7);
+    REQUIRE(spy.wait(10000));
+    CHECK(spy[0][1].toInt() == 200);
 }

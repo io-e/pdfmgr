@@ -16,6 +16,11 @@
 #include <QDir>
 #include <QUuid>
 #include <QTime>
+#include <QProgressBar>
+#include <QPointer>
+#include <algorithm>
+#include <QToolButton>
+#include <QFile>
 using namespace pdfcore;
 
 MainWindow::MainWindow() {
@@ -37,7 +42,20 @@ MainWindow::MainWindow() {
     connect(&m_print, &PrintService::jobFinished, this, [this](quint64 id, bool ok, int code, QString err) {
         log(tr("Print #%1 %2 (exit %3) %4").arg(id).arg(ok ? tr("done") : tr("FAILED")).arg(code).arg(err.trimmed()));
     });
+    m_progress = new QProgressBar; m_progress->setMaximumWidth(180); m_progress->setTextVisible(true); m_progress->hide();
+    m_cancel = new QToolButton; m_cancel->setText(tr("Cancel")); m_cancel->hide();
+    statusBar()->addPermanentWidget(m_progress); statusBar()->addPermanentWidget(m_cancel);
+    connect(m_cancel, &QToolButton::clicked, this, &MainWindow::cancelCurrentTask);
+    connect(m_tabs, &QTabWidget::currentChanged, this, &MainWindow::updateActions);
+    connect(&m_jobs, &JobQueue::finished, this, [this](quint64 id, QVariant v) {
+        if (!m_ops.contains(id)) return;
+        auto m = v.toMap();
+        finishTask(id, m.value("ok").toBool(), m.value("error").toString(), m.value("outputs").toStringList());
+    });
+    connect(&m_jobs, &JobQueue::failed, this, [this](quint64 id, QString err) { if (m_ops.contains(id)) finishTask(id, false, err, {}); });
+    connect(&m_jobs, &JobQueue::canceled, this, [this](quint64 id) { if (m_ops.contains(id)) finishTask(id, false, tr("canceled"), {}); });
     buildActions();
+    updateActions();
     log(tr("Print backend: %1").arg(m_print.backend().name()));
 }
 
@@ -52,6 +70,11 @@ bool MainWindow::openFile(const QString& path) {
     connect(t, &DocumentTab::stateChanged, this, [this, t] {
         int i = m_tabs->indexOf(t);
         if (i >= 0) m_tabs->setTabText(i, QFileInfo(t->originalPath()).fileName() + (t->isModified() ? " *" : ""));
+    });
+    connect(t, &DocumentTab::busyChanged, this, [this, t] { if (t == current()) updateActions(); });
+    connect(t, &DocumentTab::progress, this, [this, t](int d, int total) {
+        if (t != current()) return;
+        m_progress->setRange(0, std::max(total, 1)); m_progress->setValue(d);
     });
     m_tabs->setCurrentIndex(m_tabs->addTab(t, QFileInfo(path).fileName()));
     return true;
@@ -68,12 +91,15 @@ void MainWindow::buildActions() {
         if (toolbar) tb->addAction(a);
         return a;
     };
+    auto addDoc = [&](QMenu* m, const QString& text, QKeySequence ks, auto fn, bool toolbar = true) {
+        auto* a = add(m, text, ks, fn, toolbar); m_docActions << a; return a;
+    };
     add(file, tr("Open…"), QKeySequence::Open, [this] {
         for (const auto& f : QFileDialog::getOpenFileNames(this, tr("Open PDF"), {}, tr("PDF (*.pdf)"))) openFile(f);
     });
-    add(file, tr("Save"), QKeySequence::Save, [this] { save(false); });
-    add(file, tr("Save as…"), QKeySequence::SaveAs, [this] { save(true); }, false);
-    add(file, tr("Print…"), QKeySequence::Print, [this] { print(); });
+    addDoc(file, tr("Save"), QKeySequence::Save, [this] { save(false); });
+    addDoc(file, tr("Save as…"), QKeySequence::SaveAs, [this] { save(true); }, false);
+    addDoc(file, tr("Print…"), QKeySequence::Print, [this] { print(); });
     file->addSeparator();
     add(file, tr("Quit"), QKeySequence::Quit, [this] { close(); }, false);
     tb->addSeparator();
@@ -83,41 +109,108 @@ void MainWindow::buildActions() {
     add(view, tr("Zoom out"), QKeySequence::ZoomOut, [this] { if (auto* t = current()) t->setZoom(t->zoom() / 1.25); });
     add(view, tr("100%"), QKeySequence(Qt::CTRL | Qt::Key_0), [this] { if (auto* t = current()) t->setZoom(1.0); });
     tb->addSeparator();
-    add(pages, tr("Rotate left"), QKeySequence(Qt::CTRL | Qt::Key_L), [this] { rotate(-90); });
-    add(pages, tr("Rotate right"), QKeySequence(Qt::CTRL | Qt::Key_R), [this] { rotate(90); });
-    add(pages, tr("Move page up"), QKeySequence(Qt::CTRL | Qt::Key_Up), [this] { movePage(-1); });
-    add(pages, tr("Move page down"), QKeySequence(Qt::CTRL | Qt::Key_Down), [this] { movePage(1); });
-    add(pages, tr("Delete page"), QKeySequence::Delete, [this] { deletePage(); }, false);
-    add(pages, tr("Extract pages…"), {}, [this] { extractPages(); }, false);
-    add(pages, tr("Split…"), {}, [this] { splitDoc(); }, false);
-    add(pages, tr("Merge with…"), {}, [this] { mergeWith(); }, false);
+    addDoc(pages, tr("Rotate left"), QKeySequence(Qt::CTRL | Qt::Key_L), [this] { rotate(-90); });
+    addDoc(pages, tr("Rotate right"), QKeySequence(Qt::CTRL | Qt::Key_R), [this] { rotate(90); });
+    addDoc(pages, tr("Move page up"), QKeySequence(Qt::CTRL | Qt::Key_Up), [this] { movePage(-1); });
+    addDoc(pages, tr("Move page down"), QKeySequence(Qt::CTRL | Qt::Key_Down), [this] { movePage(1); });
+    addDoc(pages, tr("Delete page"), QKeySequence::Delete, [this] { deletePage(); }, false);
+    addDoc(pages, tr("Extract pages…"), {}, [this] { extractPages(); }, false);
+    addDoc(pages, tr("Split…"), {}, [this] { splitDoc(); }, false);
+    addDoc(pages, tr("Merge with…"), {}, [this] { mergeWith(); }, false);
     tb->addSeparator();
     m_search = new QLineEdit; m_search->setPlaceholderText(tr("Search…")); m_search->setMaximumWidth(220);
     m_search->setClearButtonEnabled(true);
     tb->addWidget(m_search);
+    auto* cancel = add(pages, tr("Cancel running task"), QKeySequence(Qt::Key_Escape), [this] { cancelCurrentTask(); }, false);
+    Q_UNUSED(cancel);
     connect(m_search, &QLineEdit::returnPressed, this, [this, last = std::make_shared<QString>()] {
         auto* t = current(); if (!t) return;
         if (*last == m_search->text()) t->findNext(); else { *last = m_search->text(); t->find(*last); }
     });
 }
 
+
+DocumentTab* MainWindow::tabById(quint64 id) const {
+    for (int i = 0; i < m_tabs->count(); ++i)
+        if (auto* t = qobject_cast<DocumentTab*>(m_tabs->widget(i)); t && t->tabId() == id) return t;
+    return nullptr;
+}
+
+void MainWindow::updateActions() {
+    auto* t = current();
+    const bool busy = t && t->isBusy();
+    for (auto* a : std::as_const(m_docActions)) a->setEnabled(t && !busy);
+    m_search->setEnabled(t && !busy);
+    m_progress->setVisible(busy); m_cancel->setVisible(busy);
+    if (busy) { m_progress->setRange(0, 0); m_progress->setFormat(t->taskLabel() + " %p%"); }
+}
+
+void MainWindow::cancelCurrentTask() { if (auto* t = current(); t && t->isBusy()) t->cancelTask(); }
+
+bool MainWindow::runTask(DocumentTab* t, const QString& label, OpKind kind, TaskFn fn,
+                         const QString& out, const QList<int>& affected, int jumpTo) {
+    if (!t || t->isBusy()) return false;
+    CancelToken token = t->beginTask(label);
+    const quint64 tabId = t->tabId();
+    QPointer<MainWindow> self(this);
+    PageOps::Progress progress = [self, tabId, token](int d, int total) {
+        if (self) QMetaObject::invokeMethod(self.data(), [self, tabId, d, total] {
+            if (!self) return;
+            if (auto* tab = self->tabById(tabId)) tab->reportProgress(d, total);
+        }, Qt::QueuedConnection);
+        return !token.isCancelled();
+    };
+    quint64 id = m_jobs.submit([fn, progress, token] {
+        if (token.isCancelled()) return QVariant(QVariantMap{{"ok", false}, {"error", QStringLiteral("canceled")}});
+        OpResult r = fn(progress);
+        return QVariant(QVariantMap{{"ok", r.ok}, {"error", r.error}, {"outputs", r.outputs}});
+    }, tabId);
+    t->setTaskJob(id);
+    m_ops.insert(id, PendingOp{tabId, kind, out, affected, jumpTo, label});
+    return true;
+}
+
+void MainWindow::finishTask(quint64 jobId, bool ok, const QString& error, const QStringList& outputs) {
+    PendingOp op = m_ops.take(jobId);
+    DocumentTab* t = tabById(op.tab);
+    const bool canceled = !t || t->taskCanceled();
+    if (t) t->endTask();
+    auto discard = [&] {
+        if (op.kind == OpKind::ApplyToTab && !op.out.isEmpty()) QFile::remove(op.out);
+        // Split removes its own partial outputs on cancel/error.
+    };
+    if (canceled) {
+        discard();
+        if (op.kind == OpKind::Split || op.kind == OpKind::OpenResult) for (const auto& f : outputs) QFile::remove(f);
+        if (t) statusBar()->showMessage(tr("%1 canceled").arg(op.label), 4000);
+        return;
+    }
+    if (!ok) { discard(); QMessageBox::warning(this, tr("Operation failed"), error); return; }
+    switch (op.kind) {
+    case OpKind::ApplyToTab: {
+        QString err;
+        if (!t->applyWorkingCopy(op.out, &err, op.affected)) { QFile::remove(op.out); QMessageBox::warning(this, tr("Operation failed"), err); return; }
+        if (op.jumpTo >= 0) t->setPage(op.jumpTo);
+        statusBar()->showMessage(tr("%1 done").arg(op.label), 3000);
+        break;
+    }
+    case OpKind::OpenResult: if (!op.out.isEmpty()) openFile(op.out); break;
+    case OpKind::Split: log(tr("Split into %1 files: %2").arg(outputs.size()).arg(QFileInfo(op.out).absolutePath())); break;
+    }
+}
+
 static QString tempOut() { return QDir::temp().filePath("pdfmgr-op-" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".pdf"); }
 
-void MainWindow::runOp(const std::function<OpResult(const QString&, const QString&)>& op, const QList<int>& affected) {
+void MainWindow::runOp(const QString& label, const std::function<OpResult(const QString&, const QString&)>& op,
+                       const QList<int>& affected, int jumpTo) {
     auto* t = current(); if (!t) return;
-    // MVP: page ops run synchronously (small docs); TODO move to JobQueue with progress.
-    QString out = tempOut();
-    OpResult r = op(t->workingPath(), out);
-    QString err;
-    if (!r.ok || !t->applyWorkingCopy(out, &err, affected)) {
-        QFile::remove(out);
-        QMessageBox::warning(this, tr("Operation failed"), r.ok ? err : r.error);
-    }
+    const QString in = t->workingPath(), out = tempOut();
+    runTask(t, label, OpKind::ApplyToTab, [op, in, out](const PageOps::Progress&) { return op(in, out); }, out, affected, jumpTo);
 }
 void MainWindow::rotate(int deg) {
     auto* t = current(); if (!t) return;
     int p = t->currentPage();
-    runOp([=](const QString& in, const QString& out) { return PageOps::rotate(in, {p}, deg, out); }, {p});
+    runOp(tr("Rotating"), [=](const QString& in, const QString& out) { return PageOps::rotate(in, {p}, deg, out); }, {p});
 }
 void MainWindow::movePage(int d) {
     auto* t = current(); if (!t) return;
@@ -125,13 +218,12 @@ void MainWindow::movePage(int d) {
     if (q < 0 || q >= n) return;
     QList<int> order; for (int i = 0; i < n; ++i) order << i;
     order.swapItemsAt(p, q);
-    runOp([=](const QString& in, const QString& out) { return PageOps::reorder(in, order, out); }, {p, q});
-    t->setPage(q);
+    runOp(tr("Moving page"), [=](const QString& in, const QString& out) { return PageOps::reorder(in, order, out); }, {p, q}, q);
 }
 void MainWindow::deletePage() {
     auto* t = current(); if (!t || t->pageCount() < 2) return;
     QList<int> keep; for (int i = 0; i < t->pageCount(); ++i) if (i != t->currentPage()) keep << i;
-    runOp([=](const QString& in, const QString& out) { return PageOps::extract(in, keep, out); });
+    runOp(tr("Deleting page"), [=](const QString& in, const QString& out) { return PageOps::extract(in, keep, out); });
 }
 void MainWindow::extractPages() {
     auto* t = current(); if (!t) return;
@@ -140,8 +232,8 @@ void MainWindow::extractPages() {
     if (!pages) { if (!spec.isEmpty()) QMessageBox::warning(this, tr("Extract"), tr("Invalid range")); return; }
     QString out = QFileDialog::getSaveFileName(this, tr("Save extracted pages"), {}, tr("PDF (*.pdf)"));
     if (out.isEmpty()) return;
-    auto r = PageOps::extract(t->workingPath(), *pages, out);
-    if (r.ok) openFile(out); else QMessageBox::warning(this, tr("Extract"), r.error);
+    const QString in = t->workingPath(); const QList<int> sel = *pages;
+    runTask(t, tr("Extracting pages"), OpKind::OpenResult, [in, sel, out](const PageOps::Progress&) { return PageOps::extract(in, sel, out); }, out);
 }
 void MainWindow::splitDoc() {
     auto* t = current(); if (!t) return;
@@ -149,18 +241,17 @@ void MainWindow::splitDoc() {
     if (!ok) return;
     QString dir = QFileDialog::getExistingDirectory(this, tr("Output folder")); if (dir.isEmpty()) return;
     QString prefix = QDir(dir).filePath(QFileInfo(t->originalPath()).completeBaseName());
-    auto r = PageOps::split(t->workingPath(), prefix, per);
-    if (r.ok) log(tr("Split into %1 files in %2").arg(r.outputs.size()).arg(dir));
-    else QMessageBox::warning(this, tr("Split"), r.error);
+    const QString in = t->workingPath();
+    runTask(t, tr("Splitting"), OpKind::Split, [in, prefix, per](const PageOps::Progress& p) { return PageOps::split(in, prefix, per, p); }, prefix);
 }
 void MainWindow::mergeWith() {
     auto* t = current(); if (!t) return;
     QStringList others = QFileDialog::getOpenFileNames(this, tr("Append PDFs"), {}, tr("PDF (*.pdf)"));
     if (others.isEmpty()) return;
-    runOp([=](const QString& in, const QString& out) { return PageOps::merge(QStringList{in} + others, out); });
+    runOp(tr("Merging"), [=](const QString& in, const QString& out) { return PageOps::merge(QStringList{in} + others, out); });
 }
 void MainWindow::save(bool as) {
-    auto* t = current(); if (!t) return;
+    auto* t = current(); if (!t || t->isBusy()) return;
     QString path = t->originalPath();
     if (as) { path = QFileDialog::getSaveFileName(this, tr("Save as"), path, tr("PDF (*.pdf)")); if (path.isEmpty()) return; }
     QString err;
@@ -168,7 +259,7 @@ void MainWindow::save(bool as) {
     else statusBar()->showMessage(tr("Saved %1").arg(path), 3000);
 }
 void MainWindow::print() {
-    auto* t = current(); if (!t) return;
+    auto* t = current(); if (!t || t->isBusy()) return;
     PrintDialog d(t->pageCount(), this);
     if (d.exec() != QDialog::Accepted) return;
     PrintJob j = d.job();

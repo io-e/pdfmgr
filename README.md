@@ -21,6 +21,17 @@ The MuPDF dependency libraries (`harfbuzz` … `mujs`) are only needed when the 
 static `libmupdf.a` (Ubuntu); CMake then links them via pkg-config. Neither building nor testing needs a
 display (tests run with `QT_QPA_PLATFORM=offscreen`), and the tests use the QPDF library, not the `qpdf` CLI.
 
+### Print-to-PDF integration test
+`print_to_pdf` (ctest label `print`) prints a 3-page landscape PDF through the real backend and checks
+the output's page count, orientation and text. It is reported as *Skipped* unless a PDF printer is set up:
+
+    sudo apt install cups printer-driver-cups-pdf
+    scripts/setup-cups-pdf.sh          # queue "PDF", output in ~/PDF
+    PDFMGR_TEST_PRINTER=PDF PDFMGR_TEST_PRINT_OUT=$HOME/PDF ctest --preset debug -L print
+
+On Windows CI the same test runs through SumatraPDF into "Microsoft Print to PDF" attached to a local
+port that is a fixed file path (`PDFMGR_TEST_PRINT_OUT` = that file, `PDFMGR_SUMATRA` = the exe).
+
 Compiler warnings depend on the qpdf version; the build defines `POINTERHOLDER_TRANSITION=4` for qpdf 11.
 
 ## Windows
@@ -31,4 +42,5 @@ folder; the MSI installer and code signing are not done yet. Printing and file l
 validated on a real Windows machine.
 
 ## Licence
-Links MuPDF → AGPLv3 unless an Artifex commercial licence is obtained. No `LICENSE` file yet.
+GNU AGPLv3, see [`LICENSE`](LICENSE). PDF Manager links MuPDF (AGPLv3). Third-party licences, including
+the SumatraPDF (GPLv3) source offer, are in [`licenses/`](licenses/README.md).
