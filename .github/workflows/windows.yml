@@ -20,10 +20,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 150
     env:
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-bincache
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-bincache
       # Explicit files provider: earlier runs saved an empty (~207 B) binary cache, so
       # every run rebuilt all 18 ports (~14 min). Never rely on the implicit default.
-      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-bincache,readwrite
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite
       # Not VCPKG_ROOT: msvc-dev-cmd exports the VS-bundled vcpkg into VCPKG_ROOT;
       # run-vcpkg then sets VCPKG_ROOT to this pinned clone.
       VCPKG_DIR: ${{ github.workspace }}\vcpkg
@@ -71,6 +71,13 @@ jobs:
           -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
       - name: Build
         run: cmake --build --preset windows-msvc-release
+      - name: vcpkg binary cache contents
+        if: always()
+        shell: pwsh
+        run: |
+          $f = Get-ChildItem -Recurse -File "$env:VCPKG_DEFAULT_BINARY_CACHE" -ErrorAction SilentlyContinue
+          Write-Host ("{0} files, {1:N0} MB in $env:VCPKG_DEFAULT_BINARY_CACHE" -f $f.Count, (($f | Measure-Object Length -Sum).Sum/1MB))
+          Get-ChildItem -Recurse -File -Filter *.zip $env:LOCALAPPDATA\vcpkg\archives -ErrorAction SilentlyContinue | Select-Object -First 3 FullName | Out-String | Write-Host
       - name: sccache stats
         run: sccache --show-stats
       - name: Fetch pinned SumatraPDF
