@@ -6,8 +6,14 @@
 #include <chrono>
 #include <QString>
 #include "Fixtures.h"
+#include "Corpus.h"
 int main(int argc, char** argv) {
     if (argc == 3 && std::strcmp(argv[1], "--write-fixture") == 0) { fixtures::writePdf(argv[2], 3, "Smoke"); return 0; }
+    if (argc == 3 && std::strcmp(argv[1], "--write-corpus") == 0) { // dump the corpus for manual testing
+        int n = corpus::writeTo(QString::fromLocal8Bit(argv[2]));
+        std::printf("wrote %d files\n", n);
+        return 0;
+    }
     if (argc == 4 && std::strcmp(argv[1], "--fake-backend") == 0) { // print backend stand-in for test_print
         const char* mode = argv[2];
         if (!std::strcmp(mode, "check")) {
