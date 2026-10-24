@@ -224,16 +224,15 @@ void MainWindow::finishTask(quint64 jobId, bool ok, const QString& error, const 
 
 static QString tempOut() { return QDir::temp().filePath("pdfmgr-op-" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".pdf"); }
 
-void MainWindow::runOp(const QString& label, const std::function<OpResult(const QString&, const QString&)>& op,
-                       const QList<int>& affected, int jumpTo) {
+void MainWindow::runOp(const QString& label, const CancellableOp& op, const QList<int>& affected, int jumpTo) {
     auto* t = current(); if (!t) return;
     const QString in = t->workingPath(), out = tempOut();
-    runTask(t, label, OpKind::ApplyToTab, [op, in, out](const PageOps::Progress&) { return op(in, out); }, out, affected, jumpTo);
+    runTask(t, label, OpKind::ApplyToTab, [op, in, out](const PageOps::Progress& p) { return op(in, out, p); }, out, affected, jumpTo);
 }
 void MainWindow::rotate(int deg) {
     auto* t = current(); if (!t) return;
     int p = t->currentPage();
-    runOp(tr("Rotating"), [=](const QString& in, const QString& out) { return PageOps::rotate(in, {p}, deg, out); }, {p});
+    runOp(tr("Rotating"), [=](const QString& in, const QString& out, const PageOps::Progress& pr) { return PageOps::rotate(in, {p}, deg, out, pr); }, {p});
 }
 void MainWindow::movePage(int d) {
     auto* t = current(); if (!t) return;
@@ -241,12 +240,12 @@ void MainWindow::movePage(int d) {
     if (q < 0 || q >= n) return;
     QList<int> order; for (int i = 0; i < n; ++i) order << i;
     order.swapItemsAt(p, q);
-    runOp(tr("Moving page"), [=](const QString& in, const QString& out) { return PageOps::reorder(in, order, out); }, {p, q}, q);
+    runOp(tr("Moving page"), [=](const QString& in, const QString& out, const PageOps::Progress&) { return PageOps::reorder(in, order, out); }, {p, q}, q);
 }
 void MainWindow::deletePage() {
     auto* t = current(); if (!t || t->pageCount() < 2) return;
     QList<int> keep; for (int i = 0; i < t->pageCount(); ++i) if (i != t->currentPage()) keep << i;
-    runOp(tr("Deleting page"), [=](const QString& in, const QString& out) { return PageOps::extract(in, keep, out); });
+    runOp(tr("Deleting page"), [=](const QString& in, const QString& out, const PageOps::Progress&) { return PageOps::extract(in, keep, out); });
 }
 void MainWindow::extractPages() {
     auto* t = current(); if (!t) return;
@@ -271,7 +270,7 @@ void MainWindow::mergeWith() {
     auto* t = current(); if (!t) return;
     QStringList others = QFileDialog::getOpenFileNames(this, tr("Append PDFs"), {}, tr("PDF (*.pdf)"));
     if (others.isEmpty()) return;
-    runOp(tr("Merging"), [=](const QString& in, const QString& out) { return PageOps::merge(QStringList{in} + others, out); });
+    runOp(tr("Merging"), [=](const QString& in, const QString& out, const PageOps::Progress& pr) { return PageOps::merge(QStringList{in} + others, out, pr); });
 }
 void MainWindow::save(bool as) {
     auto* t = current(); if (!t || t->isBusy()) return;

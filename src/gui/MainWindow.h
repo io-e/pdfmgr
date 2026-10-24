@@ -30,7 +30,9 @@ public:
     DocumentTab* tabById(quint64 id) const;
     void cancelCurrentTask();
 private:
-    void runOp(const QString& label, const std::function<pdfcore::OpResult(const QString& in, const QString& out)>& op,
+    // op(in, out, progress): progress is the task's cancel/progress hook.
+    using CancellableOp = std::function<pdfcore::OpResult(const QString& in, const QString& out, const pdfcore::PageOps::Progress&)>;
+    void runOp(const QString& label, const CancellableOp& op,
                const QList<int>& affected = {}, int jumpTo = -1);
     struct PendingOp { quint64 tab; OpKind kind; QString out; QList<int> affected; int jumpTo; QString label; };
     void finishTask(quint64 jobId, bool ok, const QString& error, const QStringList& outputs);

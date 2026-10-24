@@ -213,3 +213,9 @@ The installer (L5) must ship `LICENSE` and the `licenses/` folder.
 - `pdfcore::TileCache` is an LRU cache bounded in bytes and shared by all tabs. The default is 256 MB; `PDFMGR_TILE_CACHE_MB` overrides it. `TilePlanner` skips tiles that are already cached or in flight, so scrolling back over a rendered area submits no render job. The GUI smoke test checks this (`tiles=ok`).
 - `Document::renderTile` keeps the display lists of the last 4 pages, so the tiles of one page do not parse the page again.
 - Tests (`tests/test_tilecache.cpp`) cover LRU eviction and the byte cap, invalidation by generation and by page, tile geometry, scroll-back with no new jobs, tile output against the full-page render, staying under an 8 MB cap while scrolling a 2,000-page file, and no stale tile after a rotate.
+
+## Cancellable QPDF writes (feat/qpdf-cancel)
+
+- `PageOps::merge` and `PageOps::rotate` take a `Progress` callback. Returning `false` cancels the operation. The callback is checked between pages, and while QPDF writes objects, through a `QPDFWriter` progress reporter that throws to stop the write. Units are the page count plus 100 write percent.
+- On cancel the result is `{ok=false, error="canceled"}`. Outputs are only written (atomically) once the whole operation succeeds, so nothing partial is left on disk. The inputs, including an in-place target (`in == out`), are untouched.
+- In the GUI, "Rotate" and "Merge with…" now pass the task's progress and cancel hook. Esc and the Cancel button stop them.
