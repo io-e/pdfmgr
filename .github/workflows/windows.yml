@@ -24,7 +24,9 @@ jobs:
       # Explicit files provider: earlier runs saved an empty (~207 B) binary cache, so
       # every run rebuilt all 18 ports (~14 min). Never rely on the implicit default.
       VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-bincache,readwrite
-      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      # Not VCPKG_ROOT: msvc-dev-cmd exports the VS-bundled vcpkg into VCPKG_ROOT;
+      # run-vcpkg then sets VCPKG_ROOT to this pinned clone.
+      VCPKG_DIR: ${{ github.workspace }}\vcpkg
       SCCACHE_GHA_ENABLED: "true"
       # On push to main (merge commits) only build, to refresh the caches PRs read from.
       FULL: ${{ github.event_name != 'push' }}
@@ -39,10 +41,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ${{ env.VCPKG_ROOT }}
-            !${{ env.VCPKG_ROOT }}\buildtrees
-            !${{ env.VCPKG_ROOT }}\packages
-            !${{ env.VCPKG_ROOT }}\downloads
+            ${{ env.VCPKG_DIR }}
+            !${{ env.VCPKG_DIR }}\buildtrees
+            !${{ env.VCPKG_DIR }}\packages
+            !${{ env.VCPKG_DIR }}\downloads
           key: vcpkg-root-${{ env.VCPKG_COMMIT }}
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Prepare vcpkg binary cache dir
@@ -58,7 +60,7 @@ jobs:
       - uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
-          vcpkgDirectory: ${{ env.VCPKG_ROOT }}
+          vcpkgDirectory: ${{ env.VCPKG_DIR }}
           vcpkgJsonGlob: vcpkg.json
           runVcpkgInstall: false
       - name: Configure
