@@ -111,7 +111,7 @@ Chosen option: Windows CI (option A). MinGW cross-compilation (option B) remains
 | No installer or signing | `.github/workflows/windows.yml` | No deliverable | WiX or Inno Setup, code-signing certificate | Open |
 | Corpus 8/50 | tests | Phase 1 gate not measurable | Complete with 50 varied files | Open |
 | Physical printing untested | PrintService | Duplex, tray and colour only checkable on real printers | One pass on two physical printers | Open |
-| Password-protected PDFs unsupported | Document | Cannot open | Password prompt, `fz_authenticate_password` | Open |
+| Password-protected PDFs unsupported | Document | Cannot open | Password prompt, `fz_authenticate_password` | Done (feat/password-support) |
 
 ## Planning
 
@@ -197,3 +197,11 @@ The installer (L5) must ship `LICENSE` and the `licenses/` folder.
 3. One physical-printer pass for duplex, tray and colour (L3).
 4. Installer: choose WiX or Inno Setup and order a code-signing certificate early.
 5. Collect the 42 missing corpus files and book two test printers.
+
+## Encrypted PDFs (feat/password-support)
+
+- `Document::open(path, password, &error, &code)` returns `OpenError::NeedsPassword` or `OpenError::WrongPassword` so the GUI can tell them apart from other failures. MuPDF tries the empty user password first, so owner-password-only files open without a prompt.
+- The GUI asks for the password in a masked `QInputDialog` and allows 3 attempts. Canceling the prompt just closes it. When the attempts run out, the user sees "Incorrect password".
+- The password is kept in memory only, in `Document` and `DocumentTab`. It is never logged or written into error messages, and it is never passed to a print backend. QPDF operations get it on their worker thread through `PageOps::ScopedPassword` and `processInputSource(..., password)`.
+- Outputs built from an encrypted file keep its encryption. That covers in-place page operations, extract, split, and merge onto an encrypted first file. Printing is the one exception: it writes a decrypted temp copy (`PageOps::copyDecrypted`) and deletes it after the job.
+- Known limitation: merging *other* files that need a different user password is not supported yet. Those files fail with QPDF's "invalid password" error.

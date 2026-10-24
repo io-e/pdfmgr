@@ -17,5 +17,8 @@ struct PrintJob {
     QString paper;           // e.g. "A4"
     int bin = -1;            // paper tray, -1 = default
     int copies = 1;
+    // Password that unlocks `file` (never logged nor passed to the backend); the
+    // temp copy sent to the backend is then written decrypted and deleted after.
+    QString password;
 };
 }

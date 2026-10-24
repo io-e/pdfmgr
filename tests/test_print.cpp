@@ -105,3 +105,16 @@ TEST_CASE("default backend per platform", "[print]") {
     CHECK(PrintService::defaultBackend()->name() == "CUPS");
 #endif
 }
+TEST_CASE("PrintService prints an unlocked encrypted file decrypted", "[print][service][password]") {
+    auto* fb = new FakeBackend("check"); // qpdf --check without password: fails on an encrypted file
+    PrintService s{std::unique_ptr<IPrintBackend>(fb)};
+    PrintJob j; j.file = fixtures::path("enc-aes256-user.pdf"); j.password = "user-pw";
+    s.enqueue(j);
+    auto res = runAll(s, 1);
+    REQUIRE(res.size() == 1);
+    CHECK(res[0][1].toBool());
+    CHECK(res[0][3].toString().contains("checked"));
+    REQUIRE(fb->lastFiles.size() == 1);
+    CHECK_FALSE(fb->lastFiles[0].contains("user-pw"));
+    CHECK_FALSE(QFile::exists(fb->lastFiles[0])); // decrypted temp copy removed
+}

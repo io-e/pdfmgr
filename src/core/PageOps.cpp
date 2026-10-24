@@ -30,16 +30,24 @@ FILE* openFile(const QString& path, bool write) {
     return std::fopen(QFile::encodeName(path).constData(), write ? "wb" : "rb");
 #endif
 }
+thread_local QByteArray t_password;
 std::shared_ptr<QPDF> load(const QString& path) {
     FILE* f = openFile(path, false);
     if (!f) throw std::runtime_error("cannot open " + path.toStdString());
     auto src = std::make_shared<FileInputSource>(path.toUtf8().constData(), f, true); // owns f
     auto q = std::make_shared<QPDF>();
-    q->processInputSource(src);
+    q->processInputSource(src, t_password.isEmpty() ? nullptr : t_password.constData());
     return q;
 }
-QByteArray writeToMemory(QPDF& q) {
+// Outputs built from an encrypted source keep its encryption (same passwords
+// and permissions), so unlocking a file never silently strips its protection.
+void keepEncryption(QPDFWriter& w, QPDF* encFrom) {
+    if (encFrom && encFrom->isEncrypted()) w.copyEncryptionParameters(*encFrom);
+}
+QByteArray writeToMemory(QPDF& q, QPDF* encFrom = nullptr, bool decrypt = false) {
     QPDFWriter w(q);
+    keepEncryption(w, encFrom);
+    if (decrypt) w.setPreserveEncryption(false);
     w.setOutputMemory();
     w.setObjectStreamMode(qpdf_o_preserve);
     w.write();
@@ -49,13 +57,14 @@ QByteArray writeToMemory(QPDF& q) {
 // Streams q straight to `out` through a temp file in the same directory, then
 // renames it into place. Nothing is buffered in memory. Only for outputs that
 // are not an open input (QPDF keeps its input file open while writing).
-void writeToFile(QPDF& q, const QString& out) {
+void writeToFile(QPDF& q, const QString& out, QPDF* encFrom = nullptr) {
     const QString tmp = out + ".part-" + QString::number(quintptr(&q), 16);
     FILE* f = openFile(tmp, true);
     if (!f) throw std::runtime_error("cannot create " + tmp.toStdString());
     try {
         QPDFWriter w(q);
         w.setOutputFile(tmp.toUtf8().constData(), f, true); // closes f
+        keepEncryption(w, encFrom);
         w.setObjectStreamMode(qpdf_o_preserve);
         w.write();
     } catch (...) { QFile::remove(tmp); throw; }
@@ -69,9 +78,9 @@ void writeToFile(QPDF& q, const QString& out) {
 // in-place operations (in == out). See guarded().
 struct PendingWrite { QString path; QByteArray data; };
 thread_local std::vector<PendingWrite>* t_pending = nullptr;
-void save(QPDF& q, const QString& out, OpResult& r) {
+void save(QPDF& q, const QString& out, OpResult& r, QPDF* encFrom = nullptr, bool decrypt = false) {
     if (!t_pending) throw std::logic_error("save() outside guarded()");
-    t_pending->push_back({out, writeToMemory(q)});
+    t_pending->push_back({out, writeToMemory(q, encFrom, decrypt)});
     r.outputs << out;
 }
 
@@ -129,7 +138,7 @@ void buildSubset(QPDF& src, const QList<int>& pages, const QString& out, OpResul
         if (p < 0 || p >= int(all.size())) throw std::runtime_error("page index out of range");
         dh.addPage(all[size_t(p)], false);
     }
-    save(dst, out, r);
+    save(dst, out, r, &src);
 }
 template <class F> OpResult guarded(F f) {
     OpResult r;
@@ -199,9 +208,12 @@ OpResult merge(const QStringList& inputs, const QString& out) {
                 dst.getRoot().replaceKey("/Outlines", root);
             }
         }
-        save(dst, out, r);
+        save(dst, out, r, srcs.empty() ? nullptr : srcs.front().get());
     });
 }
+
+ScopedPassword::ScopedPassword(const QString& password) : m_prev(t_password) { t_password = password.toUtf8(); }
+ScopedPassword::~ScopedPassword() { t_password = m_prev; }
 
 OpResult split(const QString& in, const QString& outPrefix, int per, const Progress& progress) {
     OpResult r;
@@ -221,7 +233,7 @@ OpResult split(const QString& in, const QString& outPrefix, int per, const Progr
                 QPDF dst; dst.emptyPDF();
                 QPDFPageDocumentHelper dh(dst);
                 for (int p = start; p < std::min(n, start + per); ++p) dh.addPage(all[size_t(p)], false);
-                writeToFile(dst, out);
+                writeToFile(dst, out, src.get());
             }
             written << out;
             if (progress && !progress(idx, files)) throw std::runtime_error("canceled");
@@ -264,6 +276,9 @@ OpResult rotate(const QString& in, const QList<int>& pages, int degrees, const Q
 
 OpResult copy(const QString& in, const QString& out) {
     return guarded([&](OpResult& r) { auto q = load(in); save(*q, out, r); });
+}
+OpResult copyDecrypted(const QString& in, const QString& out) {
+    return guarded([&](OpResult& r) { auto q = load(in); save(*q, out, r, nullptr, true); });
 }
 
 QList<int> rotations(const QString& in, QString* error) {

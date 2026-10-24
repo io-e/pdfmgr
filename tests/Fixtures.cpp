@@ -56,8 +56,28 @@ QString dir() {
         QPDFWriter w(q, d.filePath("objstm.pdf").toUtf8().constData());
         w.setObjectStreamMode(qpdf_o_generate);
         w.write();
+        // Encrypted files (fixture passwords are test data, not secrets).
+        writeEncrypted(d.filePath("three.pdf"), d.filePath("enc-aes256-user.pdf"), "user-pw", "owner-pw", Crypt::AES256);
+        writeEncrypted(d.filePath("three.pdf"), d.filePath("enc-aes256-owner-only.pdf"), "", "owner-pw", Crypt::AES256);
+        writeEncrypted(d.filePath("three.pdf"), d.filePath("enc-rc4-user.pdf"), "user-pw", "owner-pw", Crypt::RC4_128);
+        writeEncrypted(d.filePath("three.pdf"), d.filePath("enc-aes128-user.pdf"), "user-pw", "owner-pw", Crypt::AES128);
     }
     return g_dir->path();
+}
+void writeEncrypted(const QString& in, const QString& out, const char* user, const char* owner, Crypt c) {
+    QPDF q; q.processFile(in.toUtf8().constData());
+    QPDFWriter w(q, out.toUtf8().constData());
+    w.setStaticID(true); // reproducible output
+    switch (c) {
+    case Crypt::AES256: w.setR6EncryptionParameters(user, owner, true, true, true, true, true, true, qpdf_r3p_full, true); break;
+    case Crypt::AES128: w.setR4EncryptionParametersInsecure(user, owner, true, true, true, true, true, true, qpdf_r3p_full, true, true); break;
+    case Crypt::RC4_128: w.setR3EncryptionParametersInsecure(user, owner, true, true, true, true, true, true, qpdf_r3p_full); break;
+    }
+    w.write();
+}
+bool isEncrypted(const QString& file, const char* password) {
+    QPDF q; q.processFile(file.toUtf8().constData(), password);
+    return q.isEncrypted();
 }
 QString path(const QString& name) { return QDir(dir()).filePath(name); }
 QString tmpFile(const QString& name) { return QDir(dir()).filePath("out-" + name); }

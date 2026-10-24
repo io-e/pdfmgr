@@ -14,6 +14,12 @@ class DocumentTab : public QWidget {
     Q_OBJECT
 public:
     static DocumentTab* open(const QString& path, pdfcore::JobQueue* jobs, QString* error, QWidget* parent = nullptr);
+    // `password` unlocks encrypted files; `code` tells a missing/wrong password
+    // apart from other failures so the caller can prompt again.
+    static DocumentTab* open(const QString& path, pdfcore::JobQueue* jobs, const QString& password,
+                             QString* error, pdfcore::OpenError* code, QWidget* parent = nullptr);
+    // Password that unlocked this document (empty if none). Never logged.
+    QString password() const { return m_password; }
     QString originalPath() const { return m_original; }
     QString workingPath() const { return m_working; }
     bool isModified() const { return m_modified; }
@@ -54,7 +60,8 @@ signals:
     void progress(int done, int total);
 private:
     DocumentTab(pdfcore::JobQueue* jobs, QWidget* parent);
-    bool load(const QString& file, QString* error, const QList<int>& affected = {}, bool keepThumbs = false);
+    bool load(const QString& file, QString* error, const QList<int>& affected = {}, bool keepThumbs = false,
+              pdfcore::OpenError* code = nullptr);
     void requestRender();
     void resetThumbnails(const QList<int>& affected, bool keepThumbs);
     void scheduleThumbs();
@@ -68,6 +75,7 @@ private:
     const quint64 m_tabId; // monotonic, never reused (unlike a pointer value)
     std::shared_ptr<pdfcore::Document> m_doc;
     QString m_original, m_working;
+    QString m_password;
     bool m_modified = false;
     int m_page = 0;
     double m_zoom = 1.0;
