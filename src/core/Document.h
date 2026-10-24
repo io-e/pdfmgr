@@ -3,6 +3,8 @@
 #include <QImage>
 #include <QRectF>
 #include <QSizeF>
+#include <QRect>
+#include <list>
 #include <QList>
 #include <memory>
 #include <functional>
@@ -10,6 +12,7 @@
 #include <atomic>
 #include "CancelToken.h"
 struct fz_document;
+struct fz_display_list;
 
 namespace pdfcore {
 struct SearchHit { int page; QRectF rect; }; // rect in PDF points (72 dpi)
@@ -39,6 +42,12 @@ public:
     QSizeF pageSize(int page) const; // points
     // cancel: optional token; its fz_cookie is passed straight to MuPDF.
     QImage render(int page, double zoom, const CancelToken* cancel = nullptr) const;
+    // Size in device pixels of `page` rendered at `zoom` (what render() returns).
+    QSize pageSizePx(int page, double zoom) const;
+    // Renders only `tilePx` (device pixels, origin at the page's top-left) of the
+    // page at `zoom`. Display lists of recently used pages are kept, so the tiles
+    // of one page do not re-parse it. Returns a null image when canceled.
+    QImage renderTile(int page, double zoom, const QRect& tilePx, const CancelToken* cancel = nullptr) const;
     QImage thumbnail(int page, int maxSide = 160, const CancelToken* cancel = nullptr) const;
     QString pageText(int page) const;
     // Searches every page. `cancel` stops early (partial hits are returned);
@@ -54,5 +63,11 @@ private:
     fz_document* m_doc = nullptr;
     int m_pageCount = 0;
     mutable std::mutex m_docMutex;
+    // Small LRU of display lists (guarded by m_docMutex); lists are kept with
+    // fz_keep_display_list while in use, so eviction never frees a list in use.
+    struct ListEntry { int page; fz_display_list* list; float x0, y0, x1, y1; };
+    mutable std::list<ListEntry> m_lists;
+    static constexpr size_t kMaxLists = 4;
+    fz_display_list* displayList(void* ctx, int page, float bounds[4]) const;
 };
 }

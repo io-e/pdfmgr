@@ -5,6 +5,7 @@ add_library(pdfcore STATIC
   AtomicWrite.h AtomicWrite.cpp
   CancelToken.h CancelToken.cpp
   JobQueue.h JobQueue.cpp
+  TileCache.h TileCache.cpp
   PrintJob.h
   IPrintBackend.h
   CupsBackend.h CupsBackend.cpp

@@ -15,8 +15,30 @@
 #include <QTimer>
 #include <QPointer>
 #include <algorithm>
+#include <QPaintEvent>
+#include <atomic>
 
 using namespace pdfcore;
+
+// Draws the current page from cached tiles; missing tiles are requested.
+class PageView : public QWidget {
+public:
+    explicit PageView(DocumentTab* t) : m_tab(t) { setAttribute(Qt::WA_OpaquePaintEvent); }
+protected:
+    void paintEvent(QPaintEvent* e) override { QPainter p(this); m_tab->paintPage(p, e->rect()); }
+private:
+    DocumentTab* m_tab;
+};
+
+TileCache& DocumentTab::tileCache() {
+    static TileCache cache([] {
+        bool ok = false;
+        qint64 mb = qEnvironmentVariableIntValue("PDFMGR_TILE_CACHE_MB", &ok);
+        return (ok && mb > 0 ? mb : 256) << 20;
+    }());
+    return cache;
+}
+static quint64 nextDocGen() { static std::atomic<quint64> g{1}; return g++; }
 
 DocumentTab::DocumentTab(JobQueue* jobs, QWidget* parent)
     : QWidget(parent), m_jobs(jobs), m_tabId(JobQueue::newOwnerId()) {
@@ -28,25 +50,19 @@ DocumentTab::DocumentTab(JobQueue* jobs, QWidget* parent)
     m_thumbs->setIconSize(QSize(120, 160));
     m_thumbs->setMovement(QListView::Static);
     m_thumbs->setFixedWidth(170);
-    m_view = new QLabel; m_view->setAlignment(Qt::AlignCenter);
-    m_scroll = new QScrollArea; m_scroll->setWidget(m_view); m_scroll->setWidgetResizable(true);
+    m_view = new PageView(this);
+    m_scroll = new QScrollArea; m_scroll->setWidget(m_view); m_scroll->setWidgetResizable(false);
     m_scroll->setAlignment(Qt::AlignCenter);
+    m_tileTimer = new QTimer(this); m_tileTimer->setSingleShot(true); m_tileTimer->setInterval(0);
+    connect(m_tileTimer, &QTimer::timeout, this, &DocumentTab::requestTiles);
+    auto onScroll = [this] { if (!m_tileTimer->isActive()) m_tileTimer->start(); };
+    connect(m_scroll->verticalScrollBar(), &QScrollBar::valueChanged, this, onScroll);
+    connect(m_scroll->horizontalScrollBar(), &QScrollBar::valueChanged, this, onScroll);
     auto* split = new QSplitter; split->addWidget(m_thumbs); split->addWidget(m_scroll);
     split->setStretchFactor(1, 1);
     auto* l = new QHBoxLayout(this); l->setContentsMargins(0, 0, 0, 0); l->addWidget(split);
     connect(m_thumbs->verticalScrollBar(), &QScrollBar::valueChanged, this, &DocumentTab::scheduleThumbs);
     connect(m_thumbs, &QListWidget::currentRowChanged, this, [this](int r) { if (r >= 0 && r != m_page) setPage(r); });
-    connect(m_jobs, &JobQueue::renderFinished, this, [this](quint64, quint64 gen, QVariant v) {
-        if (gen != m_jobs->generation()) return;
-        auto m = v.toMap();
-        if (m.value("tab").toULongLong() != m_tabId || m.value("page").toInt() != m_page) return;
-        QImage img = m.value("img").value<QImage>();
-        if (m_hitIndex >= 0 && m_hitIndex < m_hits.size() && m_hits[m_hitIndex].page == m_page) {
-            QPainter p(&img);
-            p.fillRect(QRectF(m_hits[m_hitIndex].rect.topLeft() * m_zoom, m_hits[m_hitIndex].rect.size() * m_zoom), QColor(255, 220, 0, 110));
-        }
-        m_view->setPixmap(QPixmap::fromImage(img));
-    });
     connect(m_jobs, &JobQueue::failed, this, [this](quint64 id, QString err) {
         if (!m_task || m_task->job != id || !m_task->label.startsWith(tr("Searching"))) return;
         endTask(); emit status(tr("Search failed: %1").arg(err));
@@ -54,6 +70,17 @@ DocumentTab::DocumentTab(JobQueue* jobs, QWidget* parent)
     connect(m_jobs, &JobQueue::finished, this, [this](quint64, QVariant v) {
         auto m = v.toMap();
         if (m.value("kind") == "search" && m.value("tab").toULongLong() == m_tabId) { onSearchDone(m); return; }
+        if (m.value("kind") == "tile" && m.value("tab").toULongLong() == m_tabId) {
+            const TileKey k{m.value("gen").toULongLong(), m.value("page").toInt(), m.value("zk").toInt(), m.value("tx").toInt(), m.value("ty").toInt()};
+            m_tileTokens.remove(k);
+            m_tiles.done(k, m.value("img").value<QImage>(), m_docGen); // stale generations are not cached
+            if (k.docGen == m_docGen && k.page == m_page && k.zoomKey == TileCache::zoomKey(m_zoom * devicePixelRatioF())) {
+                const double dpr = devicePixelRatioF();
+                QRect r = Tiles::rect(k.tx, k.ty, m_pagePx);
+                m_view->update(QRectF(r.x() / dpr, r.y() / dpr, r.width() / dpr, r.height() / dpr).toAlignedRect());
+            }
+            return;
+        }
         if (m.value("kind") != "thumb" || m.value("tab").toULongLong() != m_tabId || m.value("gen").toULongLong() != m_thumbGen) return;
         --m_thumbBatches;
         const auto pages = m.value("pages").toList();
@@ -75,6 +102,11 @@ void DocumentTab::releaseDocument() {
     if (m_task) m_task->token.cancel(); // a running search/page op stops early
     m_jobs->cancelOwner(m_tabId);
     m_jobs->waitForOwner(m_tabId);
+    // Tiles of this document generation can never be shown again.
+    for (auto& t : m_tileTokens) t.cancel();
+    m_tileTokens.clear();
+    m_tiles.reset();
+    if (m_docGen) tileCache().invalidate(m_docGen);
     m_doc.reset();
     ++m_thumbGen; m_thumbQueued.clear(); m_thumbBatches = 0;
 }
@@ -106,6 +138,8 @@ bool DocumentTab::load(const QString& file, QString* error, const QList<int>& af
     if (!d) return false;
     m_password = d->password(); // dropped if the file no longer needs one
     keepThumbs = keepThumbs && m_thumbReady.size() == d->pageCount();
+    if (m_docGen) tileCache().invalidate(m_docGen);
+    m_docGen = nextDocGen();
     m_doc = d;
     m_hits.clear(); m_hitIndex = -1;
     m_page = std::clamp(m_page, 0, std::max(0, d->pageCount() - 1));
@@ -165,17 +199,68 @@ void DocumentTab::requestVisibleThumbs() {
     }
 }
 
+// Sizes the view for the current page/zoom and requests the visible tiles.
 void DocumentTab::requestRender() {
     if (!m_doc) return;
-    quint64 gen = m_jobs->bumpGeneration(); // stale tiles get discarded
-    auto doc = m_doc; int page = m_page; double z = m_zoom * devicePixelRatioF(); quint64 tab = m_tabId;
-    double dpr = devicePixelRatioF();
-    m_jobs->submitRender(gen, [doc, page, z, tab, dpr](const CancelToken& cancel) {
-        QImage img = doc->render(page, z, &cancel);
-        img.setDevicePixelRatio(dpr);
-        return QVariant(QVariantMap{{"tab", tab}, {"page", page}, {"img", img}});
-    }, m_tabId);
+    const double dpr = devicePixelRatioF();
+    m_pagePx = m_doc->pageSizePx(m_page, m_zoom * dpr);
+    m_view->resize(QSizeF(m_pagePx.width() / dpr, m_pagePx.height() / dpr).toSize());
+    m_view->update();
+    if (!m_tileTimer->isActive()) m_tileTimer->start();
     emit status(tr("Page %1 / %2 — zoom %3%").arg(m_page + 1).arg(pageCount()).arg(int(m_zoom * 100)));
+}
+
+QRect DocumentTab::visibleDevicePx() const {
+    const double dpr = devicePixelRatioF();
+    QRect vis(m_view->mapFrom(m_scroll->viewport(), QPoint(0, 0)), m_scroll->viewport()->size());
+    vis = vis.intersected(m_view->rect());
+    if (vis.isEmpty()) return {};
+    return QRectF(vis.x() * dpr, vis.y() * dpr, vis.width() * dpr, vis.height() * dpr).toAlignedRect();
+}
+
+// Only visible tiles are rendered, one JobQueue job each, each with its own
+// CancelToken (fz_cookie). Tiles that scrolled out of view are canceled; cached
+// and in-flight tiles are never requested twice.
+void DocumentTab::requestTiles() {
+    if (!m_doc || m_pagePx.isEmpty()) return;
+    const double zoom = m_zoom * devicePixelRatioF();
+    const QRect vis = visibleDevicePx();
+    const int zk = TileCache::zoomKey(zoom);
+    QList<TileKey> wanted;
+    for (const QPoint& t : Tiles::visible(m_pagePx, vis)) wanted << TileKey{m_docGen, m_page, zk, t.x(), t.y()};
+    for (const TileKey& k : m_tiles.stale(wanted)) {
+        if (auto it = m_tileTokens.find(k); it != m_tileTokens.end()) { it->cancel(); m_tileTokens.erase(it); }
+        m_tiles.forget(k);
+    }
+    auto doc = m_doc; const quint64 tab = m_tabId;
+    for (const TileKey& k : m_tiles.plan(m_docGen, m_page, zoom, m_pagePx, vis)) {
+        CancelToken token;
+        m_tileTokens.insert(k, token);
+        const QRect r = Tiles::rect(k.tx, k.ty, m_pagePx);
+        m_jobs->submit([doc, k, r, zoom, token, tab] {
+            QImage img = doc->renderTile(k.page, zoom, r, &token);
+            return QVariant(QVariantMap{{"kind", "tile"}, {"tab", tab}, {"gen", k.docGen}, {"page", k.page},
+                                        {"zk", k.zoomKey}, {"tx", k.tx}, {"ty", k.ty}, {"img", img}});
+        }, m_tabId);
+    }
+}
+
+void DocumentTab::paintPage(QPainter& p, const QRect& dirty) {
+    p.fillRect(dirty, Qt::white);
+    if (!m_doc || m_pagePx.isEmpty()) return;
+    const double dpr = devicePixelRatioF();
+    const int zk = TileCache::zoomKey(m_zoom * dpr);
+    const QRect dirtyPx = QRectF(dirty.x() * dpr, dirty.y() * dpr, dirty.width() * dpr, dirty.height() * dpr).toAlignedRect();
+    bool missing = false;
+    for (const QPoint& t : Tiles::visible(m_pagePx, dirtyPx)) {
+        QImage img = tileCache().get(TileKey{m_docGen, m_page, zk, t.x(), t.y()});
+        if (img.isNull()) { missing = true; continue; }
+        const QRect r = Tiles::rect(t.x(), t.y(), m_pagePx);
+        p.drawImage(QRectF(r.x() / dpr, r.y() / dpr, r.width() / dpr, r.height() / dpr), img);
+    }
+    if (m_hitIndex >= 0 && m_hitIndex < m_hits.size() && m_hits[m_hitIndex].page == m_page)
+        p.fillRect(QRectF(m_hits[m_hitIndex].rect.topLeft() * m_zoom, m_hits[m_hitIndex].rect.size() * m_zoom), QColor(255, 220, 0, 110));
+    if (missing && !m_tileTimer->isActive()) m_tileTimer->start(); // e.g. evicted while visible
 }
 
 void DocumentTab::setPage(int p) {
