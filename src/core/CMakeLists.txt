@@ -11,6 +11,7 @@ add_library(pdfcore STATIC
   CupsBackend.h CupsBackend.cpp
   SumatraBackend.h SumatraBackend.cpp
   PrintService.h PrintService.cpp
+  Version.h Version.cpp
 )
 target_include_directories(pdfcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # QtGui only for QImage; no Qt Widgets dependency in the core.

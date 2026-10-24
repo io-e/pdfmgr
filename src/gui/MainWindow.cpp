@@ -25,7 +25,10 @@
 #include <algorithm>
 #include <QToolButton>
 #include <QFile>
+#include <QDesktopServices>
+#include <QUrl>
 #include "Document.h"
+#include "Version.h"
 static constexpr int kPasswordAttempts = 3;
 using pdfcore::OpenError;
 using namespace pdfcore;
@@ -166,6 +169,8 @@ void MainWindow::buildActions() {
     m_search = new QLineEdit; m_search->setPlaceholderText(tr("Search…")); m_search->setMaximumWidth(220);
     m_search->setClearButtonEnabled(true);
     tb->addWidget(m_search);
+    auto* help = menuBar()->addMenu(tr("&Help"));
+    add(help, tr("About…"), {}, [this] { showAbout(); }, false);
     auto* cancel = add(pages, tr("Cancel running task"), QKeySequence(Qt::Key_Escape), [this] { cancelCurrentTask(); }, false);
     Q_UNUSED(cancel);
     connect(m_search, &QLineEdit::returnPressed, this, [this, last = std::make_shared<QString>()] {
@@ -345,6 +350,24 @@ void MainWindow::print() {
     j.file = t->workingPath(); // PrintService copies it to a temp PDF first
     j.password = t->password();
     m_print.enqueue(j);
+}
+
+void MainWindow::showAbout() {
+    QString text = tr(
+        "<h3>PDF Manager %1</h3>"
+        "<p>Commit: %2<br>Built: %3</p>"
+        "<table>"
+        "<tr><td>Qt:</td><td>%4</td></tr>"
+        "<tr><td>MuPDF:</td><td>%5</td></tr>"
+        "<tr><td>QPDF:</td><td>%6</td></tr>"
+        "<tr><td>Print backend:</td><td>%7</td></tr>"
+        "</table>"
+        "<p>Licensed under AGPLv3.</p>")
+        .arg(QStringLiteral(PDFMGR_VERSION), QStringLiteral(PDFMGR_GIT_HASH),
+             QStringLiteral(PDFMGR_BUILD_DATE), qVersion(),
+             pdfcore::mupdfVersion(), pdfcore::qpdfVersion(),
+             m_print.backend().name());
+    QMessageBox::about(this, tr("About PDF Manager"), text);
 }
 
 // Tabs are child widgets, which ~QWidget would delete only after the members
