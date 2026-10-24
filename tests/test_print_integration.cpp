@@ -18,6 +18,7 @@
 #include <QSignalSpy>
 #include <QThread>
 #include <QTimer>
+#include <QImage>
 #include "PrintService.h"
 #include "CupsBackend.h"
 #include "SumatraBackend.h"
@@ -27,6 +28,16 @@
 using namespace pdfcore;
 
 namespace {
+// Bounding box of dark pixels.
+QRect inkBox(const QImage& img) {
+    QRect box;
+    const QImage g = img.convertToFormat(QImage::Format_Grayscale8);
+    for (int y = 0; y < g.height(); ++y) {
+        const uchar* row = g.constScanLine(y);
+        for (int x = 0; x < g.width(); ++x) if (row[x] < 128) box |= QRect(x, y, 1, 1);
+    }
+    return box;
+}
 struct Config { QString printer, out, sumatra; };
 Config config() {
     return {qEnvironmentVariable("PDFMGR_TEST_PRINTER"), qEnvironmentVariable("PDFMGR_TEST_PRINT_OUT"),
@@ -95,12 +106,25 @@ TEST_CASE("print to a PDF printer and verify the output", "[print][integration]"
     CHECK(PageOps::pageCount(out) == 3);
     QString err; auto d = Document::open(out, &err);
     REQUIRE(d);
+    // Orientation: the content must still read as landscape. Drivers may emit
+    // landscape sheets, or portrait sheets with the content turned 90 degrees
+    // (what a physical printer does). The source page holds one line of text,
+    // so the box around the printed ink tells which: a turned line is taller
+    // than wide. Ink is measured on a render, because some drivers (SumatraPDF
+    // through GDI -> Microsoft Print to PDF) rasterize and keep no text layer.
     for (int p = 0; p < d->pageCount(); ++p) {
         QSizeF s = d->pageSize(p); // includes /Rotate
-        INFO("page " << p << " size " << s.width() << "x" << s.height());
-        CHECK(s.width() > s.height()); // landscape preserved
+        QRect ink = inkBox(d->render(p, 0.5));
+        INFO("page " << p << " size " << s.width() << "x" << s.height()
+             << ", ink box " << ink.width() << "x" << ink.height());
+        REQUIRE_FALSE(ink.isEmpty());
+        const bool sheetLandscape = s.width() > s.height();
+        const bool textTurned = ink.height() > ink.width();
+        CHECK(sheetLandscape != textTurned); // content is landscape either way
     }
-    CHECK(d->pageText(0).contains("Page 1 Printed"));
+    const QString text = d->pageText(0);
+    if (text.trimmed().isEmpty()) WARN("output has no text layer (rasterized by the driver); text check skipped");
+    else CHECK(text.contains("Page 1 Printed"));
 }
 
 int main(int argc, char** argv) {

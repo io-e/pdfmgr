@@ -91,21 +91,25 @@ Chosen option: Windows CI (option A). MinGW cross-compilation (option B) remains
 
 | Item | Location | Impact | Fix | Status |
 |---|---|---|---|---|
-| Working file deleted before rename | `DocumentTab::applyWorkingCopy` | Data loss if the rename failed | Validate result, backup + replace, restore on failure | ✅ Fixed in this PR |
-| `waitForDone()` on the shared pool | `DocumentTab::applyWorkingCopy` | UI waited for every tab's jobs | Per-owner cancel + wait | ✅ Fixed in this PR |
-| Two 5 ms polling threads per render | `JobQueue.cpp`, `Document.cpp` | One extra thread per render, wakeups | Single `fz_cookie` per render via `CancelToken` | ✅ Fixed in this PR |
-| One thumbnail job per page, all resubmitted | `DocumentTab` | 2,000 jobs per rotate on a 2,000-page file | Visible-range batches, capped queue, affected pages only | ✅ Fixed in this PR |
-| `quintptr(this)` tab identity | `DocumentTab` | Results could reach a new tab at a reused address | Monotonic tab id | ✅ Fixed in this PR |
-| Merge dropped forms and bookmarks | `PageOps::merge` | Lost form fields and outlines | `QPDFAcroFormDocumentHelper::fixCopiedAnnotations`, outline copy with page remapping | ✅ Fixed in this PR |
-| `toLocal8Bit` paths | `PageOps.cpp` | Failure on accented paths on Windows | `_wfopen` + `processInputSource` | ✅ Fixed in this PR |
-| Tests required the qpdf CLI | `tests/` | Windows CI configure failure | QPDF library (`QPDFJob`) for checks and fixtures | ✅ Fixed in this PR |
-| Test discovery needed a display | `tests/CMakeLists.txt` | Build aborted without a display | `DISCOVERY_MODE PRE_TEST`, offscreen by default | ✅ Fixed in this PR |
-| Synchronous page operations | `MainWindow::runOp` | UI freeze on large files | Run through `JobQueue` with progress | Open |
-| Synchronous search | `DocumentTab::find` | Freeze on large documents | Async job, incremental results | Open |
+| Working file deleted before rename | `DocumentTab::applyWorkingCopy` | Data loss if the rename failed | Validate result, backup + replace, restore on failure | ✅ Fixed (PR #1) |
+| `waitForDone()` on the shared pool | `DocumentTab::applyWorkingCopy` | UI waited for every tab's jobs | Per-owner cancel + wait | ✅ Fixed (PR #1) |
+| Two 5 ms polling threads per render | `JobQueue.cpp`, `Document.cpp` | One extra thread per render, wakeups | Single `fz_cookie` per render via `CancelToken` | ✅ Fixed (PR #1) |
+| One thumbnail job per page, all resubmitted | `DocumentTab` | 2,000 jobs per rotate on a 2,000-page file | Visible-range batches, capped queue, affected pages only | ✅ Fixed (PR #1) |
+| `quintptr(this)` tab identity | `DocumentTab` | Results could reach a new tab at a reused address | Monotonic tab id | ✅ Fixed (PR #1) |
+| Merge dropped forms and bookmarks | `PageOps::merge` | Lost form fields and outlines | `QPDFAcroFormDocumentHelper::fixCopiedAnnotations`, outline copy with page remapping | ✅ Fixed (PR #1) |
+| `toLocal8Bit` paths | `PageOps.cpp` | Failure on accented paths on Windows | `_wfopen` + `processInputSource` | ✅ Fixed (PR #1) |
+| Tests required the qpdf CLI | `tests/` | Windows CI configure failure | QPDF library (`QPDFJob`) for checks and fixtures | ✅ Fixed (PR #1) |
+| Test discovery needed a display | `tests/CMakeLists.txt` | Build aborted without a display | `DISCOVERY_MODE PRE_TEST`, offscreen by default | ✅ Fixed (PR #1) |
+| Synchronous page operations | `MainWindow::runOp` | UI freeze on large files | `MainWindow::runTask`: `JobQueue` job owned by the tab, busy state disables conflicting actions, progress bar + Cancel (Esc) | ✅ Fixed (PR #2) |
+| Synchronous search | `DocumentTab::find` | Freeze on large documents | `JobQueue` job with `CancelToken` and page progress (results delivered at the end, not incrementally) | ✅ Fixed (PR #2) |
+| Split held every output in memory | `PageOps::split` | Memory spike on large files | Each chunk streamed to disk (temp + atomic rename) as soon as it is built; progress/cancel; partial outputs removed on cancel | ✅ Fixed (PR #2) |
+| No real print test | `tests/` | Printing untested end to end | `print_to_pdf` ctest (label `print`): CUPS-PDF on Ubuntu CI, Microsoft Print to PDF on a file port via SumatraPDF on Windows CI | ✅ Added (PR #2) |
+| Non-split QPDF ops cannot be interrupted mid-way | `PageOps` | Cancel of a long merge/rotate waits for the QPDF write to finish (result then discarded) | Progress/cancel hooks inside QPDF writes | Open |
+| No licence file | repository | Unclear terms | AGPLv3 `LICENSE` + `licenses/` third-party texts | ✅ Fixed (PR #2) |
 | No tile cache | pdfcore | Re-render on every scroll | LRU cache per zoom level | Open |
 | No installer or signing | `.github/workflows/windows.yml` | No deliverable | WiX or Inno Setup, code-signing certificate | Open |
 | Corpus 8/50 | tests | Phase 1 gate not measurable | Complete with 50 varied files | Open |
-| Real printing untested | PrintService | Main MVP risk | Tests on two physical printers | Open |
+| Physical printing untested | PrintService | Duplex, tray and colour only checkable on real printers | One pass on two physical printers | Open |
 | Password-protected PDFs unsupported | Document | Cannot open | Password prompt, `fz_authenticate_password` | Open |
 
 ## Planning
@@ -155,25 +159,40 @@ gantt
 | Printing differences between CUPS, Wine and Windows | High | Validation on real Windows with two printers |
 | Windows file locking (viewer, antivirus, spooler holding files) | Medium | Close handles before replace, retries, backup/restore, deferred temp deletion; test on real Windows |
 | vcpkg `libmupdf` port differences (static only on Windows, feature set) | Medium | Port pinned through the vcpkg baseline; custom overlay port if needed |
-| MuPDF AGPL licence | Medium | Decision before any distribution |
+| MuPDF AGPL licence | Resolved | Project released under AGPLv3 (decided 24 Oct 2026); see Licensing |
 | Sumatra flags changing between versions | Low | Pinned version and verified hash |
 
 | Decision | Details | Status |
 |---|---|---|
 | Windows CI rather than cross-compilation | Same toolchain as the target | ✅ Decided |
 | `QSaveFile` rather than `ReplaceFileW` | Atomic on both systems | ✅ Decided |
+| MuPDF licence | AGPLv3 open source rather than an Artifex commercial licence | ✅ Decided (24 Oct 2026) |
 | WiX or Inno Setup installer | To be decided in L5 | 🟡 Open |
 
 ## Licensing
 
-> ⚠️ **Open question.** The application links MuPDF, so it falls under AGPLv3 unless an Artifex commercial licence is obtained. Choose before the first distribution: publish the source under AGPL, or buy a commercial licence. The repository is public and has no `LICENSE` file yet.
+**Decision (24 Oct 2026): PDF Manager is licensed under AGPLv3** ([`LICENSE`](../LICENSE)). The application links MuPDF, which is AGPLv3 unless an Artifex commercial licence is bought; the open-source route was chosen. Consequences:
 
-QPDF is Apache 2.0, Qt 6 is LGPL with dynamic linking, and SumatraPDF is GPLv3 but isolated in a separate process.
+- Every binary release must come with (or point to) the complete corresponding source, including build scripts. The public repository satisfies this as long as each release is tagged.
+- Network use counts as distribution under AGPL section 13: a hosted version would have to offer its source to users.
+- Changing to a commercial MuPDF licence later stays possible, but needs every contributor's code to be relicensable (consider a CLA before accepting outside contributions).
+
+Third-party components ([`licenses/`](../licenses/README.md)):
+
+| Component | Licence | How it is used |
+|---|---|---|
+| MuPDF | AGPL-3.0 | Linked |
+| QPDF | Apache-2.0 (+ NOTICE) | Linked |
+| Qt 6 | LGPL-3.0 | Dynamically linked, unmodified |
+| SumatraPDF 3.6.1 | GPL-3.0 | Separate process; source link and written offer in `licenses/README.md` |
+| Tesseract | Apache-2.0 | Planned (OCR), not shipped yet |
+
+The installer (L5) must ship `LICENSE` and the `licenses/` folder.
 
 ## Next steps
 
-1. Merge the review fixes once Windows CI is green.
-2. L1: move page operations and search off the UI thread.
-3. Validate printing and file locking on real Windows (L3).
-4. Decide the MuPDF licence and add a `LICENSE` file.
+1. Merge PR #2 (async operations, streaming split, print-to-PDF tests, licensing).
+2. Test file locking on a real Windows PC (Explorer preview pane, antivirus).
+3. One physical-printer pass for duplex, tray and colour (L3).
+4. Installer: choose WiX or Inno Setup and order a code-signing certificate early.
 5. Collect the 42 missing corpus files and book two test printers.
