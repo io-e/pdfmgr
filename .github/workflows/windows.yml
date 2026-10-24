@@ -21,6 +21,13 @@ jobs:
     timeout-minutes: 150
     env:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-bincache
+      # Explicit files provider: earlier runs saved an empty (~207 B) binary cache, so
+      # every run rebuilt all 18 ports (~14 min). Never rely on the implicit default.
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-bincache,readwrite
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      SCCACHE_GHA_ENABLED: "true"
+      # On push to main (merge commits) only build, to refresh the caches PRs read from.
+      FULL: ${{ github.event_name != 'push' }}
     steps:
       - uses: actions/checkout@v4
       - uses: lukka/get-cmake@latest
@@ -28,24 +35,44 @@ jobs:
         with: { arch: x64 }
       - uses: jurplel/install-qt-action@v4
         with: { version: "${{ env.QT_VERSION }}", arch: win64_msvc2022_64, cache: true }
+      - name: Cache vcpkg clone
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.VCPKG_ROOT }}
+            !${{ env.VCPKG_ROOT }}\buildtrees
+            !${{ env.VCPKG_ROOT }}\packages
+            !${{ env.VCPKG_ROOT }}\downloads
+          key: vcpkg-root-${{ env.VCPKG_COMMIT }}
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Prepare vcpkg binary cache dir
         shell: pwsh
         run: New-Item -ItemType Directory -Force "$env:VCPKG_DEFAULT_BINARY_CACHE" | Out-Null
       - uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-bin-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-bin-${{ env.VCPKG_COMMIT }}-
+          key: vcpkg-bin-v2-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-bin-v2-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-bin-v2-${{ env.VCPKG_COMMIT }}-
       - uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+          vcpkgDirectory: ${{ env.VCPKG_ROOT }}
           vcpkgJsonGlob: vcpkg.json
           runVcpkgInstall: false
       - name: Configure
-        run: cmake --preset windows-msvc-release
+        # /Z7 (Embedded) instead of /Zi so sccache can cache MSVC objects.
+        run: >-
+          cmake --preset windows-msvc-release
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
       - name: Build
         run: cmake --build --preset windows-msvc-release
+      - name: sccache stats
+        run: sccache --show-stats
       - name: Fetch pinned SumatraPDF
+        if: env.FULL == 'true'
         shell: pwsh
         run: |
           $u = "https://www.sumatrapdfreader.org/dl/rel/$env:SUMATRA_VERSION/SumatraPDF-$env:SUMATRA_VERSION-64.zip"
@@ -57,6 +84,7 @@ jobs:
       # printing needs no Save-As dialog. Skipped (test reports Skipped) if the
       # runner image lacks the driver.
       - name: Set up PDF printer (Microsoft Print to PDF -> file port)
+        if: env.FULL == 'true'
         shell: pwsh
         run: |
           $out = "$env:RUNNER_TEMP\pdfmgr-print\out.pdf"
@@ -75,9 +103,11 @@ jobs:
           $exe = (Get-ChildItem sumatra -Filter SumatraPDF*.exe | Select-Object -First 1).FullName
           "PDFMGR_SUMATRA=$exe" | Out-File -Append $env:GITHUB_ENV
       - name: Test (including print label)
+        if: env.FULL == 'true'
         env: { QT_QPA_PLATFORM: offscreen }
         run: ctest --test-dir build/windows-msvc-release --output-on-failure
       - name: Deploy
+        if: env.FULL == 'true'
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist | Out-Null
@@ -87,6 +117,7 @@ jobs:
           windeployqt --release --no-translations dist/pdfgui.exe
       # TODO: WiX/Inno Setup packaging and code signing
       - uses: actions/upload-artifact@v4
+        if: env.FULL == 'true'
         with: { name: pdfmgr-windows, path: dist }
 
   ubuntu:
@@ -111,6 +142,7 @@ jobs:
       - name: Build (no display)
         run: env -u DISPLAY cmake --build --preset release
       - name: Test (including print label)
+        if: env.FULL == 'true'
         run: ctest --preset release
       - name: Print test must not be skipped on Ubuntu
         run: ctest --preset release -L print --no-tests=error 2>&1 | tee print.log && ! grep -q "Skipped" print.log
