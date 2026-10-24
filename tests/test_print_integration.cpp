@@ -8,6 +8,7 @@
 //   PDFMGR_SUMATRA          path to SumatraPDF.exe (Windows)
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_session.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QDir>
@@ -55,13 +56,13 @@ QFileInfoList pdfsIn(const QString& dir) {
     return QDir(dir).entryInfoList({"*.pdf"}, QDir::Files, QDir::Time);
 }
 // Waits until a new/updated PDF appears and its size is stable and parseable.
-QString waitForOutput(const QString& out, const QDateTime& since, int timeoutMs) {
+QString waitForOutput(const QString& out, const QStringList& before, int timeoutMs) {
     QElapsedTimer t; t.start();
     qint64 lastSize = -1;
     while (t.elapsed() < timeoutMs) {
         QString cand;
         if (QFileInfo(out).isDir()) {
-            for (const auto& fi : pdfsIn(out)) if (fi.lastModified() >= since) { cand = fi.absoluteFilePath(); break; }
+            for (const auto& fi : pdfsIn(out)) if (!before.contains(fi.absoluteFilePath())) { cand = fi.absoluteFilePath(); break; }
         } else if (QFileInfo::exists(out)) cand = out;
         if (!cand.isEmpty()) {
             qint64 sz = QFileInfo(cand).size();
@@ -88,19 +89,22 @@ TEST_CASE("print to a PDF printer and verify the output", "[print][integration]"
     const QString src = fixtures::tmpFile("print-src.pdf");
     fixtures::writePdf(src, 3, "Printed", QSizeF(842, 595));
     if (!QFileInfo(c.out).isDir()) QFile::remove(c.out);
-    const QDateTime since = QDateTime::currentDateTime().addSecs(-2);
+    QStringList before; // files already in the output dir
+    if (QFileInfo(c.out).isDir()) for (const auto& fi : pdfsIn(c.out)) before << fi.absoluteFilePath();
 
     PrintService svc{backend(c)};
     QSignalSpy spy(&svc, &PrintService::jobFinished);
     PrintJob j; j.file = src; j.printer = c.printer;
-    j.orientation = PrintJob::Orientation::Landscape;
+    const auto orient = GENERATE(PrintJob::Orientation::Auto, PrintJob::Orientation::Landscape);
+    INFO("requested orientation: " << (orient == PrintJob::Orientation::Auto ? "auto" : "landscape"));
+    j.orientation = orient;
     j.scaling = PrintJob::Scaling::Fit;
     svc.enqueue(j);
     REQUIRE(spy.wait(120000));
     INFO("backend stderr: " << spy[0][3].toString().toStdString());
     REQUIRE(spy[0][1].toBool());
 
-    const QString out = waitForOutput(c.out, since, 90000);
+    const QString out = waitForOutput(c.out, before, 90000);
     INFO("output location: " << c.out.toStdString());
     REQUIRE_FALSE(out.isEmpty());
     CHECK(PageOps::pageCount(out) == 3);
