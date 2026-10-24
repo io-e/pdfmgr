@@ -14,6 +14,9 @@ catch_discover_tests(pdfcore_tests
 add_test(NAME gui_smoke COMMAND pdfgui --smoke-test ${CMAKE_CURRENT_BINARY_DIR}/smoke.pdf)
 set_tests_properties(gui_smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" PASS_REGULAR_EXPRESSION "SMOKE OK tabs=1 pages=3 apply=ok async=ok tiles=ok"
   FIXTURES_REQUIRED smokepdf)
+add_test(NAME gui_dnd COMMAND pdfgui --dnd-test ${CMAKE_CURRENT_BINARY_DIR}/smoke.pdf)
+set_tests_properties(gui_dnd PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" PASS_REGULAR_EXPRESSION "DND OK drop=ok move=ok"
+  FIXTURES_REQUIRED smokepdf)
 add_test(NAME gui_smoke_fixture COMMAND pdfcore_tests --write-fixture ${CMAKE_CURRENT_BINARY_DIR}/smoke.pdf)
 set_tests_properties(gui_smoke_fixture PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" FIXTURES_SETUP smokepdf)
 

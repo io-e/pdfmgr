@@ -2,6 +2,10 @@
 #include "DocumentTab.h"
 #include "PageOps.h"
 #include "PrintDialog.h"
+#include "ThumbList.h"
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
 #include <QTabWidget>
 #include <QToolBar>
 #include <QMenuBar>
@@ -28,6 +32,7 @@ using namespace pdfcore;
 
 MainWindow::MainWindow() {
     setWindowTitle("PDF Manager");
+    setAcceptDrops(true); // PDFs dropped from a file manager open in new tabs
     resize(1200, 850);
     m_tabs = new QTabWidget; m_tabs->setTabsClosable(true); m_tabs->setDocumentMode(true);
     setCentralWidget(m_tabs);
@@ -92,6 +97,8 @@ bool MainWindow::openFile(const QString& path) {
         int i = m_tabs->indexOf(t);
         if (i >= 0) m_tabs->setTabText(i, QFileInfo(t->originalPath()).fileName() + (t->isModified() ? " *" : ""));
     });
+    connect(t, &DocumentTab::pagesMoveRequested, this, [this, t](QList<int> p, int before) { movePages(t, p, before); });
+    connect(t, &DocumentTab::filesDropped, this, [this, t](QStringList f, int before) { insertFiles(t, f, before); });
     connect(t, &DocumentTab::busyChanged, this, [this, t] { if (t == current()) updateActions(); });
     connect(t, &DocumentTab::progress, this, [this, t](int d, int total) {
         if (t != current()) return;
@@ -272,6 +279,39 @@ void MainWindow::mergeWith() {
     if (others.isEmpty()) return;
     runOp(tr("Merging"), [=](const QString& in, const QString& out, const PageOps::Progress& pr) { return PageOps::merge(QStringList{in} + others, out, pr); });
 }
+bool MainWindow::movePages(DocumentTab* t, const QList<int>& pages, int dropBefore) {
+    if (!t || t->isBusy() || pages.isEmpty()) return false;
+    const int n = t->pageCount();
+    const QList<int> order = PageOps::moveOrder(n, pages, dropBefore);
+    QList<int> identity; for (int i = 0; i < n; ++i) identity << i;
+    if (order == identity) return false; // dropped where they already are
+    QList<int> affected;
+    for (int i = 0; i < n; ++i) if (order[i] != i) affected << i;
+    const int jumpTo = int(order.indexOf(std::clamp(pages.value(0), 0, n - 1)));
+    const QString in = t->workingPath(), out = QDir::temp().filePath("pdfmgr-op-" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".pdf");
+    return runTask(t, tr("Moving pages"), OpKind::ApplyToTab,
+                   [in, order, out](const PageOps::Progress&) { return PageOps::reorder(in, order, out); }, out, affected, jumpTo);
+}
+bool MainWindow::insertFiles(DocumentTab* t, const QStringList& files, int dropBefore) {
+    if (!t || t->isBusy() || files.isEmpty()) return false;
+    const QString in = t->workingPath(), out = QDir::temp().filePath("pdfmgr-op-" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".pdf");
+    const int before = dropBefore >= t->pageCount() ? -1 : dropBefore;
+    return runTask(t, tr("Inserting %n file(s)", nullptr, int(files.size())), OpKind::ApplyToTab,
+                   [in, files, before, out](const PageOps::Progress&) { return PageOps::insertFiles(in, files, before, out); },
+                   out, {}, std::max(0, dropBefore));
+}
+// PDFs dropped anywhere else in the window (tab bar, page view, empty window)
+// open in new tabs. Drops on a thumbnail strip are handled by ThumbList.
+void MainWindow::dragEnterEvent(QDragEnterEvent* e) {
+    if (!ThumbList::pdfFiles(e->mimeData()).isEmpty()) e->acceptProposedAction(); else e->ignore();
+}
+void MainWindow::dropEvent(QDropEvent* e) {
+    const QStringList files = ThumbList::pdfFiles(e->mimeData());
+    if (files.isEmpty()) { e->ignore(); return; }
+    e->acceptProposedAction();
+    for (const auto& f : files) openFile(f);
+}
+
 void MainWindow::save(bool as) {
     auto* t = current(); if (!t || t->isBusy()) return;
     QString path = t->originalPath();

@@ -9,7 +9,8 @@
 #include "JobQueue.h"
 #include "TileCache.h"
 #include <QHash>
-class QListWidget; class QScrollArea; class QTimer; class QPainter;
+class QPainter;
+class QListWidget; class ThumbList; class QLabel; class QScrollArea; class QTimer;
 
 // One open PDF. Edits are applied (QPDF) to a working copy; Save writes it back atomically.
 class DocumentTab : public QWidget {
@@ -49,6 +50,7 @@ public:
     int tilesInFlight() const { return m_tiles.inFlight(); }
     quint64 docGeneration() const { return m_docGen; }
     QScrollArea* scrollArea() const { return m_scroll; }
+    ThumbList* thumbnails() const { return m_thumbs; }
     // One background task (page operation or search) per tab at a time.
     // While busy, conflicting actions must be disabled (see MainWindow).
     bool isBusy() const { return m_task.has_value(); }
@@ -68,6 +70,9 @@ signals:
     void status(QString msg);
     void busyChanged(bool busy);
     void progress(int done, int total);
+    // Drag and drop on the thumbnail strip (handled by MainWindow).
+    void pagesMoveRequested(QList<int> pages, int dropBefore);
+    void filesDropped(QStringList files, int dropBefore);
 private:
     DocumentTab(pdfcore::JobQueue* jobs, QWidget* parent);
     bool load(const QString& file, QString* error, const QList<int>& affected = {}, bool keepThumbs = false,
@@ -102,7 +107,7 @@ private:
     std::optional<Task> m_task;
     QList<pdfcore::SearchHit> m_hits;
     int m_hitIndex = -1;
-    QListWidget* m_thumbs;
+    ThumbList* m_thumbs;
     QScrollArea* m_scroll;
     QWidget* m_view;
     QTimer* m_tileTimer;

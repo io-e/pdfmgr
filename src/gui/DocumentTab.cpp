@@ -1,6 +1,7 @@
 #include "DocumentTab.h"
 #include "PageOps.h"
 #include "AtomicWrite.h"
+#include "ThumbList.h"
 #include <QListWidget>
 #include <QLabel>
 #include <QScrollArea>
@@ -44,11 +45,13 @@ DocumentTab::DocumentTab(JobQueue* jobs, QWidget* parent)
     : QWidget(parent), m_jobs(jobs), m_tabId(JobQueue::newOwnerId()) {
     m_thumbTimer = new QTimer(this); m_thumbTimer->setSingleShot(true); m_thumbTimer->setInterval(30);
     connect(m_thumbTimer, &QTimer::timeout, this, &DocumentTab::requestVisibleThumbs);
-    m_thumbs = new QListWidget;
+    m_thumbs = new ThumbList;
     m_thumbs->setViewMode(QListView::IconMode);
     m_thumbs->setFlow(QListView::TopToBottom);
     m_thumbs->setIconSize(QSize(120, 160));
-    m_thumbs->setMovement(QListView::Static);
+    m_thumbs->setMovement(QListView::Snap); // drag to reorder (see ThumbList)
+    connect(m_thumbs, &ThumbList::pagesMoveRequested, this, [this](QList<int> p, int before) { if (!isBusy()) emit pagesMoveRequested(p, before); });
+    connect(m_thumbs, &ThumbList::filesDropped, this, [this](QStringList f, int before) { if (!isBusy()) emit filesDropped(f, before); });
     m_thumbs->setFixedWidth(170);
     m_view = new PageView(this);
     m_scroll = new QScrollArea; m_scroll->setWidget(m_view); m_scroll->setWidgetResizable(false);

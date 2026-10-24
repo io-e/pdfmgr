@@ -2,6 +2,11 @@
 #include <QThread>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QMimeData>
+#include <QUrl>
+#include <QDropEvent>
+#include <QListWidget>
+#include "ThumbList.h"
 #include "MainWindow.h"
 #include "DocumentTab.h"
 #include <QApplication>
@@ -21,13 +26,52 @@ int main(int argc, char** argv) {
     p.addHelpOption(); p.addVersionOption();
     QCommandLineOption smoke("smoke-test", "Open files, render, then quit and report (CI).");
     p.addOption(smoke);
+    QCommandLineOption dnd("dnd-test", "Drop a PDF on the thumbnails and reorder pages, then quit and report (CI).");
+    p.addOption(dnd);
     p.addPositionalArgument("files", "PDF files to open", "[files...]");
     p.process(app);
     MainWindow w;
     w.show();
     bool allOk = true;
     for (const auto& f : p.positionalArguments()) allOk &= w.openFile(f);
-    if (p.isSet(smoke)) {
+    if (p.isSet(dnd)) {
+        // 1. A PDF dropped from a "file manager" on the thumbnail strip is
+        //    inserted at the drop position. 2. Thumbnail move = reorder.
+        QTimer::singleShot(500, &app, [&] {
+            auto* t = w.current();
+            auto wait = [&] {
+                QElapsedTimer el; el.start();
+                while (t->isBusy() && el.elapsed() < 10000) { QCoreApplication::processEvents(QEventLoop::AllEvents, 20); QThread::msleep(5); }
+            };
+            bool ok = t && t->pageCount() == 3;
+            const int before = ok ? t->pageCount() : 0;
+            QString extra = QDir::temp().filePath("pdfmgr-dnd-extra.pdf");
+            ok = ok && pdfcore::PageOps::extract(t->workingPath(), {2}, extra).ok; // 1-page file
+            if (ok) {
+                auto* list = t->thumbnails();
+                auto* mime = new QMimeData; mime->setUrls({QUrl::fromLocalFile(extra)});
+                QPoint pos = list->visualItemRect(list->item(0)).bottomLeft() - QPoint(-5, 2); // lower half of page 1
+                QDragEnterEvent enter(pos, Qt::CopyAction, mime, Qt::LeftButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(list->viewport(), &enter);
+                QDragMoveEvent move(pos, Qt::CopyAction, mime, Qt::LeftButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(list->viewport(), &move);
+                QDropEvent drop(pos, Qt::CopyAction, mime, Qt::LeftButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(list->viewport(), &drop);
+                wait();
+                ok = enter.isAccepted() && move.isAccepted() && t->pageCount() == before + 1
+                     && t->document()->pageText(1).contains("Page 3 Smoke");
+                delete mime;
+            }
+            const bool dropOk = ok;
+            ok = ok && w.movePages(t, {0}, 4); // first page to the end
+            wait();
+            ok = ok && t->document()->pageText(3).contains("Page 1 Smoke") && t->document()->pageText(0).contains("Page 3 Smoke");
+            QFile::remove(extra);
+            std::printf("DND %s drop=%s move=%s pages=%d\n", ok ? "OK" : "FAIL", dropOk ? "ok" : "FAIL", ok ? "ok" : "FAIL", t ? t->pageCount() : -1);
+            std::fflush(stdout);
+            app.exit(ok ? 0 : 1);
+        });
+    } else if (p.isSet(smoke)) {
         QTimer::singleShot(1500, &app, [&] {
             int tabs = w.tabs()->count();
             int pages = w.current() ? w.current()->pageCount() : 0;

@@ -325,6 +325,37 @@ QList<int> rotations(const QString& in, QString* error) {
     return res;
 }
 
+QList<int> moveOrder(int n, const QList<int>& moving, int dropBefore) {
+    QList<int> sel;
+    for (int p : moving) if (p >= 0 && p < n && !sel.contains(p)) sel << p;
+    std::sort(sel.begin(), sel.end());
+    dropBefore = std::clamp(dropBefore, 0, n);
+    QList<int> order;
+    for (int i = 0; i < n; ++i) {
+        if (i == dropBefore) order += sel;
+        if (!sel.contains(i)) order << i;
+    }
+    if (dropBefore == n) order += sel;
+    return order;
+}
+
+OpResult insertFiles(const QString& in, const QStringList& files, int beforePage, const QString& out) {
+    if (files.isEmpty()) { OpResult r; r.error = "no files to insert"; return r; }
+    QString err;
+    const int n = pageCount(in, &err);
+    if (n < 0) { OpResult r; r.error = err; return r; }
+    if (beforePage < 0 || beforePage >= n) return merge(QStringList{in} + files, out);
+    const QString tmp = out + ".merge-" + QString::number(quintptr(&files), 16) + ".pdf";
+    OpResult m = merge(QStringList{in} + files, tmp);
+    if (!m.ok) { QFile::remove(tmp); return m; }
+    const int total = pageCount(tmp, &err);
+    QList<int> added;
+    for (int i = n; i < total; ++i) added << i;
+    OpResult r = reorder(tmp, moveOrder(total, added, beforePage), out);
+    QFile::remove(tmp);
+    return r;
+}
+
 std::optional<QList<int>> parseRange(const QString& spec, int n) {
     QList<int> out;
     for (QString part : spec.split(',', Qt::SkipEmptyParts)) {

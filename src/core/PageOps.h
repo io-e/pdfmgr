@@ -51,6 +51,15 @@ OpResult copy(const QString& in, const QString& out);
 OpResult copyDecrypted(const QString& in, const QString& out);
 // Page /Rotate values (normalised 0..270), for tests/UI.
 QList<int> rotations(const QString& in, QString* error = nullptr);
+// New page order after moving the pages `moving` (any order, duplicates
+// ignored) so that they sit, in ascending order, before page `dropBefore` of
+// the original numbering (n = after the last page). Used by thumbnail drag and
+// drop; the result is a permutation of 0..n-1.
+QList<int> moveOrder(int n, const QList<int>& moving, int dropBefore);
+// Inserts all pages of `files` before page `beforePage` of `in` (n = append).
+// Appending is a plain merge (forms and bookmarks kept); inserting in the
+// middle is merge + reorder through a temp file next to `out`.
+OpResult insertFiles(const QString& in, const QStringList& files, int beforePage, const QString& out);
 // Parse "1-3,5" (1-based) into 0-based indexes within [0,n).
 std::optional<QList<int>> parseRange(const QString& spec, int pageCount);
 }

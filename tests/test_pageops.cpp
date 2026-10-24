@@ -165,3 +165,32 @@ TEST_CASE("page ops read and write non-ASCII paths", "[pageops][unicode]") {
     CHECK(PageOps::rotations(out) == QList<int>{90, 0});
     CHECK(PageOps::pageCount(out) == 2);
 }
+
+TEST_CASE("moveOrder for thumbnail drag and drop", "[pageops][dnd]") {
+    using L = QList<int>;
+    CHECK(PageOps::moveOrder(5, {0}, 3) == L{1, 2, 0, 3, 4});   // move page 1 between 3 and 4
+    CHECK(PageOps::moveOrder(5, {4}, 0) == L{4, 0, 1, 2, 3});   // last to first
+    CHECK(PageOps::moveOrder(5, {1}, 5) == L{0, 2, 3, 4, 1});   // to the end
+    CHECK(PageOps::moveOrder(5, {3, 1}, 0) == L{1, 3, 0, 2, 4}); // multi-select keeps order
+    CHECK(PageOps::moveOrder(5, {2}, 2) == L{0, 1, 2, 3, 4});   // dropped in place
+    CHECK(PageOps::moveOrder(5, {2}, 3) == L{0, 1, 2, 3, 4});
+    CHECK(PageOps::moveOrder(3, {1, 1, 9, -1}, 0) == L{1, 0, 2}); // invalid/duplicate ignored
+}
+
+TEST_CASE("insertFiles at a drop position", "[pageops][dnd]") {
+    const QString out = tmpFile("insert.pdf");
+    auto r = PageOps::insertFiles(path("three.pdf"), {path("one.pdf"), path("landscape.pdf")}, 1, out);
+    REQUIRE(r.ok);
+    requireValid(out);
+    REQUIRE(PageOps::pageCount(out) == 6);
+    CHECK(firstLine(out, 0) == "Page 1 Bravo");
+    CHECK(firstLine(out, 1) == "Page 1 Alpha");
+    CHECK(firstLine(out, 2) == "Page 1 Delta");
+    CHECK(firstLine(out, 3) == "Page 2 Delta");
+    CHECK(firstLine(out, 4) == "Page 2 Bravo");
+    auto app = PageOps::insertFiles(path("one.pdf"), {path("three.pdf")}, -1, out); // append
+    REQUIRE(app.ok);
+    CHECK(firstLine(out, 3) == "Page 3 Bravo");
+    CHECK_FALSE(PageOps::insertFiles(path("one.pdf"), {path("garbage.pdf")}, 0, out).ok);
+    CHECK_FALSE(QFile::exists(out + ".merge-"));
+}
