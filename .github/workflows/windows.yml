@@ -55,7 +55,7 @@ jobs:
           # Relative path: backslashes in github.workspace act as glob escapes in
           # actions/cache, which made it save an empty (207 B) archive.
           path: vcpkg-bincache
-          key: vcpkg-bin-v2-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-${{ github.run_id }}
+          key: vcpkg-bin-v2-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
             vcpkg-bin-v2-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-
             vcpkg-bin-v2-${{ env.VCPKG_COMMIT }}-
