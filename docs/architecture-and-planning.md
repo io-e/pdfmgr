@@ -78,7 +78,7 @@ Chosen option: Windows CI (option A). MinGW cross-compilation (option B) remains
 | MuPDF rendering | ✅ Done | Multithreaded, zoom, lazy batched thumbnails, `fz_cookie` cancellation |
 | QPDF page operations | ✅ Done | Merge (keeps AcroForm fields and outlines), split, extract, reorder, rotate, atomic writes |
 | IPrintBackend | ✅ Done | CUPS and Sumatra backends, print dialog |
-| UI | 🟡 Partial | Tabs, search, Pages menu; page operations and search still run on the UI thread |
+| UI | 🟡 Partial | Tabs, search, Pages menu; page operations and search run on the JobQueue (PR #2) |
 | Windows Unicode paths | ✅ Done (CI only) | `_wfopen` + `processInputSource`; tested with non-ASCII paths on Linux and in Windows CI |
 | Windows CI | 🟡 See PR | Real vcpkg baseline, `libmupdf` port, pinned Sumatra 3.6.1 with SHA-256; status in the PR |
 | Test corpus | 🟡 Partial | 8 generated files (including a form PDF) out of 50 planned |
