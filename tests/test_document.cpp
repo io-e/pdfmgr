@@ -34,7 +34,7 @@ TEST_CASE("render and thumbnail", "[document]") {
     QImage t = d->thumbnail(0, 160);
     CHECK(std::max(t.width(), t.height()) == 160);
     CHECK(d->render(99, 1.0).isNull());
-    std::atomic<bool> abort{true};
+    CancelToken abort; abort.cancel();
     CHECK(d->render(0, 1.0, &abort).isNull()); // pre-aborted via fz_cookie
 }
 TEST_CASE("text extraction and search", "[document]") {

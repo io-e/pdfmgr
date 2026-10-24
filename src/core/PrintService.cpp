@@ -2,6 +2,7 @@
 #include "PageOps.h"
 #include "CupsBackend.h"
 #include "SumatraBackend.h"
+#include "AtomicWrite.h"
 #include <QProcess>
 #include <QTimer>
 #include <QTemporaryFile>
@@ -20,7 +21,8 @@ PrintService::PrintService(std::unique_ptr<IPrintBackend> b, QObject* parent)
     : QObject(parent), m_backend(std::move(b)) {}
 PrintService::~PrintService() {
     if (m_proc) { m_proc->disconnect(this); m_proc->kill(); m_proc->waitForFinished(2000); }
-    if (!m_currentTemp.isEmpty()) QFile::remove(m_currentTemp);
+    if (!m_currentTemp.isEmpty()) m_deferredDeletes << m_currentTemp;
+    retryDeferredDeletes(2000); // best effort; anything left stays in %TEMP%
 }
 quint64 PrintService::enqueue(PrintJob job) {
     quint64 id = m_nextId++;
@@ -41,7 +43,7 @@ void PrintService::startNext() {
         tmpPath = t.fileName();
     }
     auto r = PageOps::copy(m_current.job.file, tmpPath);
-    if (!r.ok) { QFile::remove(tmpPath); finishCurrent(false, -1, "temp save failed: " + r.error); return; }
+    if (!r.ok) { deleteTemp(tmpPath); finishCurrent(false, -1, "temp save failed: " + r.error); return; }
     m_currentTemp = tmpPath;
     PrintJob j = m_current.job; j.file = tmpPath;
     // 2. Launch backend asynchronously.
@@ -69,8 +71,20 @@ void PrintService::startNext() {
 void PrintService::finishCurrent(bool ok, int code, const QString& err) {
     if (m_timer) { m_timer->stop(); m_timer->deleteLater(); m_timer = nullptr; }
     if (m_proc) { m_proc->disconnect(this); m_proc->deleteLater(); m_proc = nullptr; }
-    if (!m_currentTemp.isEmpty()) { QFile::remove(m_currentTemp); m_currentTemp.clear(); }
+    if (!m_currentTemp.isEmpty()) { deleteTemp(m_currentTemp); m_currentTemp.clear(); }
     emit jobFinished(m_current.id, ok, code, err);
     QTimer::singleShot(0, this, &PrintService::startNext);
+}
+// On Windows the backend (or the spooler / an antivirus) may still hold the file
+// for a moment after the process exits: retry briefly, then defer.
+void PrintService::deleteTemp(const QString& path) {
+    if (removeWithRetry(path, 200)) return;
+    if (!m_deferredDeletes.contains(path)) m_deferredDeletes << path;
+    QTimer::singleShot(5000, this, [this] { retryDeferredDeletes(); });
+}
+void PrintService::retryDeferredDeletes(int timeoutMs) {
+    QStringList left;
+    for (const auto& p : std::as_const(m_deferredDeletes)) if (!removeWithRetry(p, timeoutMs)) left << p;
+    m_deferredDeletes = left;
 }
 }

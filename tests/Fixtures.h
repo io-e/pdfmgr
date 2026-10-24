@@ -8,5 +8,6 @@ void writePdf(const QString& path, int pages, const QString& word = "Hello", QSi
 QString dir();                         // temp corpus dir, created once
 QString path(const QString& name);     // corpus file (generated on first use)
 QString tmpFile(const QString& name);  // writable scratch path
+void writeFormPdf(const QString& path, const QString& field, const QString& value);
 int qpdfCheck(const QString& file, QString* out = nullptr); // exit code of `qpdf --check`
 }

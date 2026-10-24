@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QQueue>
 #include <QPointer>
+#include <QStringList>
 #include <memory>
 class QProcess; class QTimer;
 
@@ -20,6 +21,8 @@ public:
     // `job.file` is the source document. Returns job id.
     quint64 enqueue(PrintJob job);
     int pending() const { return m_queue.size() + (m_proc ? 1 : 0); }
+    // Temp files that could not be deleted yet (e.g. still locked by the spooler on Windows).
+    QStringList deferredDeletes() const { return m_deferredDeletes; }
 signals:
     void jobStarted(quint64 id, QString program, QStringList args);
     void jobFinished(quint64 id, bool ok, int exitCode, QString stderrText);
@@ -28,12 +31,15 @@ private:
     struct Entry { quint64 id; PrintJob job; };
     void startNext();
     void finishCurrent(bool ok, int code, const QString& err);
+    void deleteTemp(const QString& path);
+    void retryDeferredDeletes(int timeoutMs = 0);
     std::unique_ptr<IPrintBackend> m_backend;
     QQueue<Entry> m_queue;
     QProcess* m_proc = nullptr;
     QTimer* m_timer = nullptr;
     Entry m_current{};
     QString m_currentTemp;
+    QStringList m_deferredDeletes;
     quint64 m_nextId = 1;
     int m_timeoutMs = 120000;
 };

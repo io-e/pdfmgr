@@ -4,6 +4,12 @@
 #include "AtomicWrite.h"
 #include "Fixtures.h"
 #include <QFile>
+#include <qpdf/QPDF.hh>
+#include <qpdf/QPDFAcroFormDocumentHelper.hh>
+#include <qpdf/QPDFOutlineDocumentHelper.hh>
+#include <qpdf/QPDFPageDocumentHelper.hh>
+#include <set>
+#include <string>
 using namespace pdfcore;
 using fixtures::path; using fixtures::tmpFile; using fixtures::qpdfCheck;
 
@@ -85,4 +91,43 @@ TEST_CASE("atomicWrite", "[io]") {
     REQUIRE(atomicWrite(f, "second"));
     QFile r(f); r.open(QIODevice::ReadOnly); CHECK(r.readAll() == "second");
     QString err; CHECK_FALSE(atomicWrite("/nonexistent-dir/x.pdf", "x", &err)); CHECK_FALSE(err.isEmpty());
+}
+
+TEST_CASE("merge keeps AcroForm fields and outlines", "[pageops][forms]") {
+    auto out = tmpFile("merge-form.pdf");
+    // Same form twice: the second copy's field name conflicts and must be renamed, not dropped.
+    auto r = PageOps::merge({path("form.pdf"), path("three.pdf"), path("form.pdf")}, out);
+    REQUIRE(r.ok);
+    requireValid(out);
+    QPDF q; q.processFile(out.toUtf8().constData());
+    QPDFAcroFormDocumentHelper af(q);
+    REQUIRE(af.hasAcroForm());
+    auto fields = af.getFormFields();
+    REQUIRE(fields.size() == 2);
+    std::set<std::string> names;
+    for (auto& f : fields) { names.insert(f.getFullyQualifiedName()); CHECK(f.getValueAsString() == "Foxtrot"); }
+    CHECK(names.size() == 2);          // conflict resolved by renaming
+    CHECK(names.count("name") == 1);
+    // Widgets are on pages 1 and 5 of the result.
+    auto pages = QPDFPageDocumentHelper(q).getAllPages();
+    REQUIRE(pages.size() == 5);
+    CHECK(af.getWidgetAnnotationsForPage(pages[0]).size() == 1);
+    CHECK(af.getWidgetAnnotationsForPage(pages[4]).size() == 1);
+    // Outline: one entry per input, the form's own "Section" bookmark nested and remapped.
+    QPDFOutlineDocumentHelper od(q);
+    auto top = od.getTopLevelOutlines();
+    REQUIRE(top.size() == 3);
+    CHECK(top[0].getTitle() == "form");
+    CHECK(top[1].getTitle() == "three");
+    REQUIRE(top[2].getKids().size() == 1);
+    CHECK(top[2].getKids()[0].getTitle() == "Section");
+    CHECK(top[2].getKids()[0].getDestPage().getObjGen() == pages[4].getObjectHandle().getObjGen());
+    CHECK(top[1].getDestPage().getObjGen() == pages[1].getObjectHandle().getObjGen());
+}
+TEST_CASE("page ops read and write non-ASCII paths", "[pageops][unicode]") {
+    auto out = tmpFile("rotated é ü 日本.pdf");
+    REQUIRE(PageOps::rotate(path("unicode é.pdf"), {0}, 90, out).ok);
+    CHECK(QFile::exists(out));
+    CHECK(PageOps::rotations(out) == QList<int>{90, 0});
+    CHECK(PageOps::pageCount(out) == 2);
 }
