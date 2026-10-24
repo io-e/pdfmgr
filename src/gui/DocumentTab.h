@@ -7,7 +7,9 @@
 #include "CancelToken.h"
 #include "Document.h"
 #include "JobQueue.h"
-class QListWidget; class QLabel; class QScrollArea; class QTimer;
+#include "TileCache.h"
+#include <QHash>
+class QListWidget; class QScrollArea; class QTimer; class QPainter;
 
 // One open PDF. Edits are applied (QPDF) to a working copy; Save writes it back atomically.
 class DocumentTab : public QWidget {
@@ -39,6 +41,14 @@ public:
     // count is unchanged (empty = all).
     bool applyWorkingCopy(const QString& newFile, QString* error, const QList<int>& affectedPages = {});
     quint64 tabId() const { return m_tabId; }
+    // Rendered-tile cache shared by all tabs (LRU, bounded in MB; default 256,
+    // override with PDFMGR_TILE_CACHE_MB).
+    static pdfcore::TileCache& tileCache();
+    // Tile render jobs submitted so far (tests: scrolling back must not add any).
+    quint64 tileJobs() const { return m_tiles.submitted(); }
+    int tilesInFlight() const { return m_tiles.inFlight(); }
+    quint64 docGeneration() const { return m_docGen; }
+    QScrollArea* scrollArea() const { return m_scroll; }
     // One background task (page operation or search) per tab at a time.
     // While busy, conflicting actions must be disabled (see MainWindow).
     bool isBusy() const { return m_task.has_value(); }
@@ -63,6 +73,10 @@ private:
     bool load(const QString& file, QString* error, const QList<int>& affected = {}, bool keepThumbs = false,
               pdfcore::OpenError* code = nullptr);
     void requestRender();
+    void requestTiles();
+    QRect visibleDevicePx() const; // visible part of the current page, device pixels
+    void paintPage(QPainter& p, const QRect& dirty);
+    friend class PageView;
     void resetThumbnails(const QList<int>& affected, bool keepThumbs);
     void scheduleThumbs();
     void requestVisibleThumbs();
@@ -90,5 +104,10 @@ private:
     int m_hitIndex = -1;
     QListWidget* m_thumbs;
     QScrollArea* m_scroll;
-    QLabel* m_view;
+    QWidget* m_view;
+    QTimer* m_tileTimer;
+    quint64 m_docGen = 0;            // new value on every load (tiles of older loads are stale)
+    QSize m_pagePx;                  // current page at the current zoom, device pixels
+    pdfcore::TilePlanner m_tiles{&tileCache()};
+    QHash<pdfcore::TileKey, pdfcore::CancelToken> m_tileTokens;
 };

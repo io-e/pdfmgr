@@ -48,7 +48,83 @@ std::shared_ptr<Document> Document::open(const QString& path, const QString& pas
 }
 
 Document::~Document() {
-    if (m_doc) { ScopedClone ctx; fz_drop_document(ctx, m_doc); }
+    ScopedClone ctx;
+    for (auto& e : m_lists) fz_drop_display_list(ctx, e.list);
+    if (m_doc) fz_drop_document(ctx, m_doc);
+}
+
+// Returns a kept display list for `page` (caller drops it), or nullptr.
+fz_display_list* Document::displayList(void* vctx, int page, float b[4]) const {
+    fz_context* ctx = static_cast<fz_context*>(vctx);
+    std::lock_guard g(m_docMutex);
+    for (auto it = m_lists.begin(); it != m_lists.end(); ++it) {
+        if (it->page != page) continue;
+        m_lists.splice(m_lists.begin(), m_lists, it);
+        b[0] = it->x0; b[1] = it->y0; b[2] = it->x1; b[3] = it->y1;
+        return fz_keep_display_list(ctx, it->list);
+    }
+    fz_display_list* list = nullptr;
+    fz_page* pg = nullptr;
+    fz_rect r{};
+    fz_var(pg); fz_var(list);
+    fz_try(ctx) {
+        pg = fz_load_page(ctx, m_doc, page);
+        r = fz_bound_page(ctx, pg);
+        list = fz_new_display_list_from_page(ctx, pg);
+    }
+    fz_always(ctx) { fz_drop_page(ctx, pg); }
+    fz_catch(ctx) { return nullptr; }
+    m_lists.push_front({page, fz_keep_display_list(ctx, list), r.x0, r.y0, r.x1, r.y1});
+    while (m_lists.size() > kMaxLists) { fz_drop_display_list(ctx, m_lists.back().list); m_lists.pop_back(); }
+    b[0] = r.x0; b[1] = r.y0; b[2] = r.x1; b[3] = r.y1;
+    return list;
+}
+
+QSize Document::pageSizePx(int page, double zoom) const {
+    if (page < 0 || page >= m_pageCount || zoom <= 0) return {};
+    ScopedClone ctx;
+    float b[4];
+    fz_display_list* list = displayList(ctx.get(), page, b);
+    if (!list) return {};
+    fz_drop_display_list(ctx, list);
+    fz_irect ib = fz_round_rect(fz_transform_rect(fz_make_rect(b[0], b[1], b[2], b[3]), fz_scale(zoom, zoom)));
+    return QSize(ib.x1 - ib.x0, ib.y1 - ib.y0);
+}
+
+QImage Document::renderTile(int page, double zoom, const QRect& tile, const CancelToken* cancel) const {
+    if (page < 0 || page >= m_pageCount || zoom <= 0 || tile.isEmpty()) return {};
+    if (cancel && cancel->isCancelled()) return {};
+    ScopedClone ctx;
+    float b[4];
+    fz_display_list* list = displayList(ctx.get(), page, b);
+    if (!list) return {};
+    fz_cookie local{};
+    fz_cookie* cookie = cancel ? static_cast<fz_cookie*>(cancel->nativeCookie()) : &local;
+    QImage img;
+    fz_pixmap* pix = nullptr;
+    fz_device* dev = nullptr;
+    fz_var(pix); fz_var(dev);
+    fz_try(ctx) {
+        fz_matrix ctm = fz_scale(zoom, zoom);
+        fz_irect page_ib = fz_round_rect(fz_transform_rect(fz_make_rect(b[0], b[1], b[2], b[3]), ctm));
+        fz_irect ib = fz_make_irect(page_ib.x0 + tile.left(), page_ib.y0 + tile.top(),
+                                    page_ib.x0 + tile.left() + tile.width(), page_ib.y0 + tile.top() + tile.height());
+        ib = fz_intersect_irect(ib, page_ib);
+        if (fz_is_empty_irect(ib)) fz_throw(ctx, FZ_ERROR_GENERIC, "tile outside page");
+        pix = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), ib, nullptr, 0);
+        fz_clear_pixmap_with_value(ctx, pix, 0xff);
+        dev = fz_new_draw_device(ctx, fz_identity, pix);
+        fz_run_display_list(ctx, list, dev, ctm, fz_rect_from_irect(ib), cookie);
+        fz_close_device(ctx, dev);
+        if (!(cancel && cancel->isCancelled())) {
+            int w = fz_pixmap_width(ctx, pix), h = fz_pixmap_height(ctx, pix);
+            QImage tmp(fz_pixmap_samples(ctx, pix), w, h, fz_pixmap_stride(ctx, pix), QImage::Format_RGB888);
+            img = tmp.copy();
+        }
+    }
+    fz_always(ctx) { fz_drop_device(ctx, dev); fz_drop_pixmap(ctx, pix); fz_drop_display_list(ctx, list); }
+    fz_catch(ctx) { img = QImage(); }
+    return img;
 }
 
 QSizeF Document::pageSize(int page) const {

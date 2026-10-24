@@ -1,3 +1,7 @@
+#include <QElapsedTimer>
+#include <QThread>
+#include <QScrollArea>
+#include <QScrollBar>
 #include "MainWindow.h"
 #include "DocumentTab.h"
 #include <QApplication>
@@ -29,6 +33,29 @@ int main(int argc, char** argv) {
             int pages = w.current() ? w.current()->pageCount() : 0;
             // applyWorkingCopy: a bad result must be rejected without losing the
             // document; a good one must replace the working copy.
+            // Tile cache: scrolling back to an already rendered area submits no
+            // render job.
+            const char* tiles = "skipped";
+            if (auto* t = w.current()) {
+                auto idle = [&] {
+                    QElapsedTimer el; el.start();
+                    do { QCoreApplication::processEvents(QEventLoop::AllEvents, 20); QThread::msleep(5); }
+                    while ((t->tilesInFlight() > 0 || el.elapsed() < 150) && el.elapsed() < 10000);
+                };
+                t->setZoom(3.0); idle();
+                auto* vs = t->scrollArea()->verticalScrollBar();
+                const quint64 first = t->tileJobs();
+                vs->setValue(vs->maximum()); idle();
+                const quint64 afterDown = t->tileJobs();
+                vs->setValue(0); idle();
+                vs->setValue(vs->maximum()); idle();
+                const bool ok = first > 0 && afterDown > first && t->tileJobs() == afterDown && vs->maximum() > 0;
+                if (!ok) std::printf("tiles: first=%llu down=%llu end=%llu max=%d\n", (unsigned long long)first,
+                                     (unsigned long long)afterDown, (unsigned long long)t->tileJobs(), vs->maximum());
+                tiles = ok ? "ok" : "FAIL";
+                if (!ok) allOk = false;
+                t->setZoom(1.0); idle();
+            }
             const char* apply = "skipped";
             if (auto* t = w.current()) {
                 QString bad = QDir::temp().filePath("pdfmgr-smoke-bad.pdf"), good = QDir::temp().filePath("pdfmgr-smoke-good.pdf");
@@ -53,11 +80,11 @@ int main(int argc, char** argv) {
             bool busyNow = t && t->isBusy();
             bool rejectsSecond = t && !w.runTask(t, "second", MainWindow::OpKind::ApplyToTab,
                 [](const pdfcore::PageOps::Progress&) { return pdfcore::OpResult{}; });
-            auto report = [&app, &allOk, t, started, busyNow, rejectsSecond, tabs, pages, apply] {
+            auto report = [&app, &allOk, t, started, busyNow, rejectsSecond, tabs, pages, apply, tiles] {
                 bool async = started && busyNow && rejectsSecond && t && !t->isBusy()
                     && pdfcore::PageOps::rotations(t->workingPath()).value(0) == 180;
                 if (!async) allOk = false;
-                std::printf("SMOKE %s tabs=%d pages=%d apply=%s async=%s\n", allOk ? "OK" : "FAIL", tabs, pages, apply, async ? "ok" : "FAIL");
+                std::printf("SMOKE %s tabs=%d pages=%d apply=%s async=%s tiles=%s\n", allOk ? "OK" : "FAIL", tabs, pages, apply, async ? "ok" : "FAIL", tiles);
                 std::fflush(stdout);
                 app.exit(allOk ? 0 : 1);
             };
