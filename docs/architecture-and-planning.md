@@ -104,6 +104,7 @@ Chosen option: Windows CI (option A). MinGW cross-compilation (option B) remains
 | Synchronous search | `DocumentTab::find` | Freeze on large documents | `JobQueue` job with `CancelToken` and page progress (results delivered at the end, not incrementally) | ✅ Fixed (PR #2) |
 | Split held every output in memory | `PageOps::split` | Memory spike on large files | Each chunk streamed to disk (temp + atomic rename) as soon as it is built; progress/cancel; partial outputs removed on cancel | ✅ Fixed (PR #2) |
 | No real print test | `tests/` | Printing untested end to end | `print_to_pdf` ctest (label `print`): CUPS-PDF on Ubuntu CI, Microsoft Print to PDF on a file port via SumatraPDF on Windows CI | ✅ Added (PR #2) |
+| Sumatra `landscape` setting shrank landscape pages onto portrait paper | `SumatraBackend` | Wrong orientation on Windows (found by `print_to_pdf`) | Landscape uses Sumatra's auto-rotation; Portrait adds `disable-auto-rotation`. Recheck on physical printers | ✅ Fixed (PR #2) |
 | Non-split QPDF ops cannot be interrupted mid-way | `PageOps` | Cancel of a long merge/rotate waits for the QPDF write to finish (result then discarded) | Progress/cancel hooks inside QPDF writes | Open |
 | No licence file | repository | Unclear terms | AGPLv3 `LICENSE` + `licenses/` third-party texts | ✅ Fixed (PR #2) |
 | No tile cache | pdfcore | Re-render on every scroll | LRU cache per zoom level | Open |

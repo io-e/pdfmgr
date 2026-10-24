@@ -15,8 +15,13 @@ QString SumatraBackend::settingsString(const PrintJob& j) {
     case PrintJob::Scaling::Shrink: s << "shrink"; break;
     case PrintJob::Scaling::NoScale: s << "noscale"; break;
     }
-    if (j.orientation == PrintJob::Orientation::Portrait) s << "portrait";
-    else if (j.orientation == PrintJob::Orientation::Landscape) s << "landscape";
+    // SumatraPDF 3.6.1 "landscape" does not change the printer's DEVMODE: it
+    // assumes the device context is already landscape and, on a printer set to
+    // portrait (the usual default), draws landscape pages unrotated and shrunk
+    // (found by the print_to_pdf test with Microsoft Print to PDF). Its default
+    // auto-rotation already turns landscape pages onto portrait paper, so
+    // Landscape maps to the default. Portrait disables that auto-rotation.
+    if (j.orientation == PrintJob::Orientation::Portrait) s << "portrait" << "disable-auto-rotation";
     switch (j.duplex) {
     case PrintJob::Duplex::Simplex: s << "simplex"; break;
     case PrintJob::Duplex::DuplexLong: s << "duplexlong"; break;
