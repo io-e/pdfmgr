@@ -1,0 +1,7 @@
+{
+  "name": "pdfmgr",
+  "version-string": "0.1.0",
+  "description": "Windows PDF Manager (Qt 6, MuPDF, QPDF, SumatraPDF)",
+  "dependencies": [ "mupdf", "qpdf", "catch2" ],
+  "builtin-baseline": "0000000000000000000000000000000000000000"
+}
