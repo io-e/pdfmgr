@@ -45,9 +45,6 @@ jobs:
         run: cmake --preset windows-msvc-release
       - name: Build
         run: cmake --build --preset windows-msvc-release
-      - name: Test
-        env: { QT_QPA_PLATFORM: offscreen }
-        run: ctest --test-dir build/windows-msvc-release --output-on-failure
       - name: Fetch pinned SumatraPDF
         shell: pwsh
         run: |
@@ -56,6 +53,30 @@ jobs:
           $h = (Get-FileHash sumatra.zip -Algorithm SHA256).Hash
           if ($h -ne $env:SUMATRA_SHA256) { throw "Sumatra hash mismatch: $h" }
           Expand-Archive sumatra.zip -DestinationPath sumatra
+      # "Microsoft Print to PDF" on a local port that is a fixed file path, so
+      # printing needs no Save-As dialog. Skipped (test reports Skipped) if the
+      # runner image lacks the driver.
+      - name: Set up PDF printer (Microsoft Print to PDF -> file port)
+        shell: pwsh
+        run: |
+          $out = "$env:RUNNER_TEMP\pdfmgr-print\out.pdf"
+          New-Item -ItemType Directory -Force (Split-Path $out) | Out-Null
+          $drv = Get-PrinterDriver -Name "Microsoft Print To PDF" -ErrorAction SilentlyContinue
+          if (-not $drv) {
+            Write-Host "::warning::Microsoft Print To PDF driver not available on this runner; print test will be skipped"
+            Get-PrinterDriver | Format-Table Name | Out-String | Write-Host
+            exit 0
+          }
+          Add-PrinterPort -Name $out
+          Add-Printer -Name "PdfmgrTestPDF" -DriverName "Microsoft Print To PDF" -PortName $out
+          Get-Printer | Format-Table Name,DriverName,PortName | Out-String | Write-Host
+          "PDFMGR_TEST_PRINTER=PdfmgrTestPDF" | Out-File -Append $env:GITHUB_ENV
+          "PDFMGR_TEST_PRINT_OUT=$out" | Out-File -Append $env:GITHUB_ENV
+          $exe = (Get-ChildItem sumatra -Filter SumatraPDF*.exe | Select-Object -First 1).FullName
+          "PDFMGR_SUMATRA=$exe" | Out-File -Append $env:GITHUB_ENV
+      - name: Test (including print label)
+        env: { QT_QPA_PLATFORM: offscreen }
+        run: ctest --test-dir build/windows-msvc-release --output-on-failure
       - name: Deploy
         shell: pwsh
         run: |
@@ -78,10 +99,18 @@ jobs:
           sudo apt-get install -y --no-install-recommends qt6-base-dev cmake ninja-build g++ pkg-config \
             libmupdf-dev libqpdf-dev catch2 \
             libharfbuzz-dev libfreetype-dev libjbig2dec0-dev libopenjp2-7-dev libgumbo-dev libmujs-dev \
-            libjpeg-dev zlib1g-dev libgl-dev
+            libjpeg-dev zlib1g-dev libgl-dev \
+            cups printer-driver-cups-pdf
+      - name: Set up CUPS-PDF queue
+        run: |
+          scripts/setup-cups-pdf.sh PDF
+          echo "PDFMGR_TEST_PRINTER=PDF" >> "$GITHUB_ENV"
+          echo "PDFMGR_TEST_PRINT_OUT=$HOME/PDF" >> "$GITHUB_ENV"
       - name: Configure (warnings are errors)
         run: cmake --preset release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
       - name: Build (no display)
         run: env -u DISPLAY cmake --build --preset release
-      - name: Test
+      - name: Test (including print label)
         run: ctest --preset release
+      - name: Print test must not be skipped on Ubuntu
+        run: ctest --preset release -L print --no-tests=error 2>&1 | tee print.log && ! grep -q "Skipped" print.log

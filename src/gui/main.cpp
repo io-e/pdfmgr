@@ -42,9 +42,31 @@ int main(int argc, char** argv) {
                 apply = rejected && applied ? "ok" : "FAIL";
                 if (!(rejected && applied)) allOk = false;
             }
-            std::printf("SMOKE %s tabs=%d pages=%d apply=%s\n", allOk ? "OK" : "FAIL", tabs, pages, apply);
-            std::fflush(stdout);
-            app.exit(allOk ? 0 : 1);
+            // Async page op through the JobQueue: the tab is busy (actions
+            // disabled) while it runs, the event loop keeps spinning, and the
+            // result is applied when the job finishes.
+            auto* t = w.current();
+            bool started = t && w.runTask(t, "Smoke rotate", MainWindow::OpKind::ApplyToTab,
+                [in = t->workingPath(), out = QDir::temp().filePath("pdfmgr-smoke-async.pdf")](const pdfcore::PageOps::Progress&) {
+                    return pdfcore::PageOps::rotate(in, {0}, 90, out); },
+                QDir::temp().filePath("pdfmgr-smoke-async.pdf"), {0});
+            bool busyNow = t && t->isBusy();
+            bool rejectsSecond = t && !w.runTask(t, "second", MainWindow::OpKind::ApplyToTab,
+                [](const pdfcore::PageOps::Progress&) { return pdfcore::OpResult{}; });
+            auto report = [&app, &allOk, t, started, busyNow, rejectsSecond, tabs, pages, apply] {
+                bool async = started && busyNow && rejectsSecond && t && !t->isBusy()
+                    && pdfcore::PageOps::rotations(t->workingPath()).value(0) == 180;
+                if (!async) allOk = false;
+                std::printf("SMOKE %s tabs=%d pages=%d apply=%s async=%s\n", allOk ? "OK" : "FAIL", tabs, pages, apply, async ? "ok" : "FAIL");
+                std::fflush(stdout);
+                app.exit(allOk ? 0 : 1);
+            };
+            if (!t) { report(); return; }
+            auto* poll = new QTimer(&app);
+            QObject::connect(poll, &QTimer::timeout, &app, [=, n = 0]() mutable {
+                if (!t->isBusy() || ++n > 200) { poll->stop(); report(); }
+            });
+            poll->start(50);
         });
     }
     return app.exec();

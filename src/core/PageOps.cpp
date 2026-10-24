@@ -46,6 +46,22 @@ QByteArray writeToMemory(QPDF& q) {
     auto buf = w.getBufferSharedPointer();
     return QByteArray(reinterpret_cast<const char*>(buf->getBuffer()), qsizetype(buf->getSize()));
 }
+// Streams q straight to `out` through a temp file in the same directory, then
+// renames it into place. Nothing is buffered in memory. Only for outputs that
+// are not an open input (QPDF keeps its input file open while writing).
+void writeToFile(QPDF& q, const QString& out) {
+    const QString tmp = out + ".part-" + QString::number(quintptr(&q), 16);
+    FILE* f = openFile(tmp, true);
+    if (!f) throw std::runtime_error("cannot create " + tmp.toStdString());
+    try {
+        QPDFWriter w(q);
+        w.setOutputFile(tmp.toUtf8().constData(), f, true); // closes f
+        w.setObjectStreamMode(qpdf_o_preserve);
+        w.write();
+    } catch (...) { QFile::remove(tmp); throw; }
+    QString err;
+    if (!replaceFileSafely(tmp, out, &err)) { QFile::remove(tmp); throw std::runtime_error(err.toStdString()); }
+}
 // Output goes through QSaveFile (temp file + atomic rename), which already uses
 // wide-character Win32 APIs, so Unicode output paths are safe on Windows too.
 // Writes are deferred until every QPDF (and its open input file) has been
@@ -187,17 +203,36 @@ OpResult merge(const QStringList& inputs, const QString& out) {
     });
 }
 
-OpResult split(const QString& in, const QString& outPrefix, int per) {
-    return guarded([&](OpResult& r) {
+OpResult split(const QString& in, const QString& outPrefix, int per, const Progress& progress) {
+    OpResult r;
+    QStringList written;
+    try {
         if (per < 1) throw std::runtime_error("pagesPerFile must be >= 1");
+        const QString inAbs = QFileInfo(in).absoluteFilePath();
         auto src = load(in);
-        int n = int(QPDFPageDocumentHelper(*src).getAllPages().size());
+        auto all = QPDFPageDocumentHelper(*src).getAllPages();
+        const int n = int(all.size());
+        const int files = (n + per - 1) / per;
+        if (progress && !progress(0, files)) throw std::runtime_error("canceled");
         for (int start = 0, idx = 1; start < n; start += per, ++idx) {
-            QList<int> pages;
-            for (int p = start; p < std::min(n, start + per); ++p) pages << p;
-            buildSubset(*src, pages, QStringLiteral("%1-%2.pdf").arg(outPrefix).arg(idx), r);
+            const QString out = QStringLiteral("%1-%2.pdf").arg(outPrefix).arg(idx);
+            if (QFileInfo(out).absoluteFilePath() == inAbs) throw std::runtime_error("split output would overwrite the input");
+            {   // One chunk alive at a time: built, streamed to disk, destroyed.
+                QPDF dst; dst.emptyPDF();
+                QPDFPageDocumentHelper dh(dst);
+                for (int p = start; p < std::min(n, start + per); ++p) dh.addPage(all[size_t(p)], false);
+                writeToFile(dst, out);
+            }
+            written << out;
+            if (progress && !progress(idx, files)) throw std::runtime_error("canceled");
         }
-    });
+        r.outputs = written;
+        r.ok = true;
+    } catch (std::exception& e) {
+        for (const auto& f : std::as_const(written)) QFile::remove(f);
+        r.ok = false; r.error = QString::fromUtf8(e.what());
+    }
+    return r;
 }
 
 OpResult extract(const QString& in, const QList<int>& pages, const QString& out) {

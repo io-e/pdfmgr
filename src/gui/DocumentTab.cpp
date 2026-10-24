@@ -13,6 +13,7 @@
 #include <QUuid>
 #include <QScrollBar>
 #include <QTimer>
+#include <QPointer>
 #include <algorithm>
 
 using namespace pdfcore;
@@ -46,8 +47,13 @@ DocumentTab::DocumentTab(JobQueue* jobs, QWidget* parent)
         }
         m_view->setPixmap(QPixmap::fromImage(img));
     });
+    connect(m_jobs, &JobQueue::failed, this, [this](quint64 id, QString err) {
+        if (!m_task || m_task->job != id || !m_task->label.startsWith(tr("Searching"))) return;
+        endTask(); emit status(tr("Search failed: %1").arg(err));
+    });
     connect(m_jobs, &JobQueue::finished, this, [this](quint64, QVariant v) {
         auto m = v.toMap();
+        if (m.value("kind") == "search" && m.value("tab").toULongLong() == m_tabId) { onSearchDone(m); return; }
         if (m.value("kind") != "thumb" || m.value("tab").toULongLong() != m_tabId || m.value("gen").toULongLong() != m_thumbGen) return;
         --m_thumbBatches;
         const auto pages = m.value("pages").toList();
@@ -66,6 +72,7 @@ DocumentTab::DocumentTab(JobQueue* jobs, QWidget* parent)
 // Cancels and waits for this tab's jobs only, then drops the MuPDF document so
 // no handle on the working file remains (Windows cannot rename/delete open files).
 void DocumentTab::releaseDocument() {
+    if (m_task) m_task->token.cancel(); // a running search/page op stops early
     m_jobs->cancelOwner(m_tabId);
     m_jobs->waitForOwner(m_tabId);
     m_doc.reset();
@@ -171,11 +178,47 @@ void DocumentTab::setPage(int p) {
 }
 void DocumentTab::setZoom(double z) { m_zoom = std::clamp(z, 0.1, 8.0); requestRender(); emit stateChanged(); }
 
+CancelToken DocumentTab::beginTask(const QString& label, quint64 jobId) {
+    m_task = Task{label, CancelToken{}, jobId};
+    emit status(label + QStringLiteral("…"));
+    emit busyChanged(true);
+    return m_task->token;
+}
+void DocumentTab::endTask() {
+    if (!m_task) return;
+    m_task.reset();
+    emit busyChanged(false);
+}
+void DocumentTab::cancelTask() {
+    if (!m_task) return;
+    m_task->token.cancel();
+    emit status(tr("Canceling %1…").arg(m_task->label));
+}
+
+// Search runs on the JobQueue; the UI stays responsive and can cancel it.
 void DocumentTab::find(const QString& text) {
-    if (!m_doc) return;
-    m_hits = m_doc->search(text); // TODO: move to JobQueue for very large documents
-    m_hitIndex = -1;
-    if (m_hits.isEmpty()) { emit status(tr("No match for \"%1\"").arg(text)); requestRender(); return; }
+    if (!m_doc || isBusy() || text.isEmpty()) return;
+    CancelToken token = beginTask(tr("Searching \"%1\"").arg(text));
+    auto doc = m_doc; quint64 tab = m_tabId;
+    QPointer<DocumentTab> self(this);
+    quint64 id = m_jobs->submit([doc, text, token, tab, self] {
+        auto hits = doc->search(text, 64, &token, [self](int d, int t) {
+            // Posted to the tab's thread; dropped automatically if the tab is gone.
+            if (self) QMetaObject::invokeMethod(self.data(), [self, d, t] { if (self) self->reportProgress(d, t); }, Qt::QueuedConnection);
+        });
+        QVariantList list;
+        for (const auto& h : hits) list << QVariantList{h.page, h.rect};
+        return QVariant(QVariantMap{{"kind", "search"}, {"tab", tab}, {"text", text}, {"hits", list}});
+    }, m_tabId);
+    setTaskJob(id);
+}
+void DocumentTab::onSearchDone(const QVariantMap& m) {
+    const bool canceled = taskCanceled();
+    endTask();
+    if (canceled) { emit status(tr("Search canceled")); return; }
+    m_hits.clear(); m_hitIndex = -1;
+    for (const auto& v : m.value("hits").toList()) { auto l = v.toList(); m_hits.push_back({l.value(0).toInt(), l.value(1).toRectF()}); }
+    if (m_hits.isEmpty()) { emit status(tr("No match for \"%1\"").arg(m.value("text").toString())); requestRender(); return; }
     findNext();
 }
 void DocumentTab::findNext() {

@@ -115,13 +115,16 @@ QString Document::pageText(int page) const {
     return out;
 }
 
-QList<SearchHit> Document::search(const QString& needle, int maxHits) const {
+QList<SearchHit> Document::search(const QString& needle, int maxHits, const CancelToken* cancel,
+                                  const std::function<void(int, int)>& progress) const {
     QList<SearchHit> hits;
     if (needle.isEmpty()) return hits;
     ScopedClone ctx;
     QByteArray n = needle.toUtf8();
     std::vector<fz_quad> quads(maxHits);
     for (int p = 0; p < m_pageCount; ++p) {
+        if (cancel && cancel->isCancelled()) break;
+        if (progress && (p % 16 == 0)) progress(p, m_pageCount);
         std::lock_guard g(m_docMutex);
         int count = 0;
         fz_try(ctx) { count = fz_search_page_number(ctx, m_doc, p, n.constData(), nullptr, quads.data(), maxHits); }
@@ -131,6 +134,7 @@ QList<SearchHit> Document::search(const QString& needle, int maxHits) const {
             hits.push_back({p, QRectF(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0)});
         }
     }
+    if (progress && !(cancel && cancel->isCancelled())) progress(m_pageCount, m_pageCount);
     return hits;
 }
 }

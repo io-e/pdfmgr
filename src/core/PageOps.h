@@ -4,6 +4,7 @@
 #include <QList>
 #include <QByteArray>
 #include <optional>
+#include <functional>
 
 namespace pdfcore {
 // QPDF-based page operations. Each call opens its own QPDF instances (QPDF is
@@ -14,8 +15,14 @@ struct OpResult { bool ok = false; QString error; QStringList outputs; };
 namespace PageOps {
 int pageCount(const QString& in, QString* error = nullptr);
 OpResult merge(const QStringList& inputs, const QString& out);
+// Progress callback: (units done, units total). Return false to cancel.
+using Progress = std::function<bool(int done, int total)>;
 // Split into chunks of `pagesPerFile`; files named <outPrefix>-<n>.pdf (1-based).
-OpResult split(const QString& in, const QString& outPrefix, int pagesPerFile = 1);
+// Each output is written to disk (temp file + atomic rename) as soon as it is
+// built, so memory stays bounded by one chunk. Progress counts output files.
+// On error or cancel, outputs already written by this call are removed.
+OpResult split(const QString& in, const QString& outPrefix, int pagesPerFile = 1,
+               const Progress& progress = {});
 OpResult extract(const QString& in, const QList<int>& pages, const QString& out);
 // newOrder: permutation of 0..n-1 (or subset; missing pages are dropped).
 OpResult reorder(const QString& in, const QList<int>& newOrder, const QString& out);
