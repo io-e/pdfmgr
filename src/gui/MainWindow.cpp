@@ -49,6 +49,23 @@ MainWindow::MainWindow() {
     });
     connect(&m_print, &PrintService::jobFinished, this, [this](quint64 id, bool ok, int code, QString err) {
         log(tr("Print #%1 %2 (exit %3) %4").arg(id).arg(ok ? tr("done") : tr("FAILED")).arg(code).arg(err.trimmed()));
+        if (!ok) {
+            QString msg;
+            if (err.contains("timeout", Qt::CaseInsensitive))
+                msg = tr("The print backend did not respond within the timeout period.\n"
+                         "The printer may be offline or busy.");
+            else if (err.contains("failed to start", Qt::CaseInsensitive))
+                msg = tr("Could not start the print backend.\n"
+                         "Please check that the application is correctly installed.");
+            else if (code != 0 && !err.trimmed().isEmpty())
+                msg = tr("The print backend exited with code %1:\n%2").arg(code).arg(err.trimmed());
+            else if (code != 0)
+                msg = tr("The print backend exited with code %1.\n"
+                         "The printer may not be available.").arg(code);
+            else
+                msg = tr("Printing failed:\n%1").arg(err.trimmed());
+            QMessageBox::warning(this, tr("Print failed"), msg);
+        }
     });
     m_progress = new QProgressBar; m_progress->setMaximumWidth(180); m_progress->setTextVisible(true); m_progress->hide();
     m_cancel = new QToolButton; m_cancel->setText(tr("Cancel")); m_cancel->hide();
