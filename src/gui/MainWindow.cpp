@@ -34,6 +34,13 @@ static constexpr int kPasswordAttempts = 3;
 using pdfcore::OpenError;
 using namespace pdfcore;
 
+static bool isFileLockError(const QString& err) {
+    return err.contains("locked", Qt::CaseInsensitive)
+        || err.contains("in use", Qt::CaseInsensitive)
+        || err.contains("cannot move", Qt::CaseInsensitive)
+        || err.contains("cannot replace", Qt::CaseInsensitive);
+}
+
 MainWindow::MainWindow() {
     setWindowTitle("PDF Manager");
     setAcceptDrops(true); // PDFs dropped from a file manager open in new tabs
@@ -375,13 +382,6 @@ void MainWindow::print() {
     j.file = t->workingPath(); // PrintService copies it to a temp PDF first
     j.password = t->password();
     m_print.enqueue(j);
-}
-
-static bool isFileLockError(const QString& err) {
-    return err.contains("locked", Qt::CaseInsensitive)
-        || err.contains("in use", Qt::CaseInsensitive)
-        || err.contains("cannot move", Qt::CaseInsensitive)
-        || err.contains("cannot replace", Qt::CaseInsensitive);
 }
 
 void MainWindow::showAbout() {
