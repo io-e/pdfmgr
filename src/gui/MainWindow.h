@@ -10,6 +10,7 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     MainWindow();
+    ~MainWindow() override;
     bool openFile(const QString& path);
     DocumentTab* current() const;
     QTabWidget* tabs() const { return m_tabs; }

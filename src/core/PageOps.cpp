@@ -48,9 +48,14 @@ QByteArray writeToMemory(QPDF& q) {
 }
 // Output goes through QSaveFile (temp file + atomic rename), which already uses
 // wide-character Win32 APIs, so Unicode output paths are safe on Windows too.
+// Writes are deferred until every QPDF (and its open input file) has been
+// destroyed: Windows cannot replace a file that is still open, which matters for
+// in-place operations (in == out). See guarded().
+struct PendingWrite { QString path; QByteArray data; };
+thread_local std::vector<PendingWrite>* t_pending = nullptr;
 void save(QPDF& q, const QString& out, OpResult& r) {
-    QString err;
-    if (!atomicWrite(out, writeToMemory(q), &err)) throw std::runtime_error(err.toStdString());
+    if (!t_pending) throw std::logic_error("save() outside guarded()");
+    t_pending->push_back({out, writeToMemory(q)});
     r.outputs << out;
 }
 
@@ -112,8 +117,19 @@ void buildSubset(QPDF& src, const QList<int>& pages, const QString& out, OpResul
 }
 template <class F> OpResult guarded(F f) {
     OpResult r;
-    try { f(r); r.ok = true; }
-    catch (std::exception& e) { r.ok = false; r.error = QString::fromUtf8(e.what()); }
+    std::vector<PendingWrite> pending;
+    t_pending = &pending;
+    try {
+        f(r); // all QPDF objects live inside f and are closed when it returns
+        t_pending = nullptr;
+        for (auto& w : pending) {
+            QString err;
+            if (!atomicWrite(w.path, w.data, &err)) throw std::runtime_error(err.toStdString());
+        }
+        r.ok = true;
+    }
+    catch (std::exception& e) { r.ok = false; r.error = QString::fromUtf8(e.what()); r.outputs.clear(); }
+    t_pending = nullptr;
     return r;
 }
 }

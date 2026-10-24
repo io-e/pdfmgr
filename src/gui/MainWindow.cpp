@@ -175,3 +175,9 @@ void MainWindow::print() {
     j.file = t->workingPath(); // PrintService copies it to a temp PDF first
     m_print.enqueue(j);
 }
+
+// Tabs are child widgets, which ~QWidget would delete only after the members
+// (m_jobs, m_print) are gone; their destructors use m_jobs, so delete them first.
+MainWindow::~MainWindow() {
+    while (tabs()->count() > 0) delete tabs()->widget(0);
+}
