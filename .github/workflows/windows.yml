@@ -52,7 +52,9 @@ jobs:
         run: New-Item -ItemType Directory -Force "$env:VCPKG_DEFAULT_BINARY_CACHE" | Out-Null
       - uses: actions/cache@v4
         with:
-          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          # Relative path: backslashes in github.workspace act as glob escapes in
+          # actions/cache, which made it save an empty (207 B) archive.
+          path: vcpkg-bincache
           key: vcpkg-bin-v2-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-${{ github.run_id }}
           restore-keys: |
             vcpkg-bin-v2-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-
@@ -75,8 +77,8 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $f = Get-ChildItem -Recurse -File "$env:VCPKG_DEFAULT_BINARY_CACHE" -ErrorAction SilentlyContinue
-          Write-Host ("{0} files, {1:N0} MB in $env:VCPKG_DEFAULT_BINARY_CACHE" -f $f.Count, (($f | Measure-Object Length -Sum).Sum/1MB))
+          $f = Get-ChildItem -Recurse -File "${{ github.workspace }}/vcpkg-bincache" -ErrorAction SilentlyContinue
+          Write-Host ("{0} files, {1:N0} MB in vcpkg-bincache" -f $f.Count, (($f | Measure-Object Length -Sum).Sum/1MB))
           Get-ChildItem -Recurse -File -Filter *.zip $env:LOCALAPPDATA\vcpkg\archives -ErrorAction SilentlyContinue | Select-Object -First 3 FullName | Out-String | Write-Host
       - name: sccache stats
         run: sccache --show-stats
