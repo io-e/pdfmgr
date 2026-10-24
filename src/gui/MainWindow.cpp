@@ -243,7 +243,19 @@ void MainWindow::finishTask(quint64 jobId, bool ok, const QString& error, const 
     switch (op.kind) {
     case OpKind::ApplyToTab: {
         QString err;
-        if (!t->applyWorkingCopy(op.out, &err, op.affected)) { QFile::remove(op.out); QMessageBox::warning(this, tr("Operation failed"), err); return; }
+        while (!t->applyWorkingCopy(op.out, &err, op.affected)) {
+            if (isFileLockError(err)) {
+                auto btn = QMessageBox::warning(this, tr("File in use"),
+                    tr("The file appears to be locked by another process.\n%1\n\n"
+                       "Close other programs using this file and try again.").arg(err),
+                    QMessageBox::Retry | QMessageBox::Cancel);
+                if (btn == QMessageBox::Retry) { err.clear(); continue; }
+            } else {
+                QMessageBox::warning(this, tr("Operation failed"), err);
+            }
+            QFile::remove(op.out);
+            return;
+        }
         if (op.jumpTo >= 0) t->setPage(op.jumpTo);
         statusBar()->showMessage(tr("%1 done").arg(op.label), 3000);
         break;
@@ -341,8 +353,19 @@ void MainWindow::save(bool as) {
     QString path = t->originalPath();
     if (as) { path = QFileDialog::getSaveFileName(this, tr("Save as"), path, tr("PDF (*.pdf)")); if (path.isEmpty()) return; }
     QString err;
-    if (!t->saveTo(path, &err)) QMessageBox::warning(this, tr("Save"), err);
-    else statusBar()->showMessage(tr("Saved %1").arg(path), 3000);
+    while (!t->saveTo(path, &err)) {
+        if (isFileLockError(err)) {
+            auto btn = QMessageBox::warning(this, tr("File in use"),
+                tr("Cannot save — the file appears to be locked.\n%1\n\n"
+                   "Close other programs using this file and try again.").arg(err),
+                QMessageBox::Retry | QMessageBox::Cancel);
+            if (btn == QMessageBox::Retry) { err.clear(); continue; }
+        } else {
+            QMessageBox::warning(this, tr("Save"), err);
+        }
+        return;
+    }
+    statusBar()->showMessage(tr("Saved %1").arg(path), 3000);
 }
 void MainWindow::print() {
     auto* t = current(); if (!t || t->isBusy()) return;
@@ -352,6 +375,13 @@ void MainWindow::print() {
     j.file = t->workingPath(); // PrintService copies it to a temp PDF first
     j.password = t->password();
     m_print.enqueue(j);
+}
+
+static bool isFileLockError(const QString& err) {
+    return err.contains("locked", Qt::CaseInsensitive)
+        || err.contains("in use", Qt::CaseInsensitive)
+        || err.contains("cannot move", Qt::CaseInsensitive)
+        || err.contains("cannot replace", Qt::CaseInsensitive);
 }
 
 void MainWindow::showAbout() {

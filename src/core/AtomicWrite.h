@@ -8,9 +8,9 @@ bool atomicWrite(const QString& path, const QByteArray& data, QString* error = n
 // Removes `path`, retrying for up to `timeoutMs` (Windows refuses to delete a
 // file that another handle still has open, e.g. a viewer or antivirus scan).
 // Returns true if the file no longer exists.
-bool removeWithRetry(const QString& path, int timeoutMs = 2000);
+bool removeWithRetry(const QString& path, int timeoutMs = 5000);
 // Renames with the same retry policy (destination must not exist).
-bool renameWithRetry(const QString& from, const QString& to, int timeoutMs = 2000);
+bool renameWithRetry(const QString& from, const QString& to, int timeoutMs = 5000);
 
 // Replaces `target` with `replacement` without ever losing `target`:
 //   1. target -> backup, 2. replacement -> target, 3. delete backup.
@@ -19,5 +19,5 @@ bool renameWithRetry(const QString& from, const QString& to, int timeoutMs = 200
 // `target` first (required on Windows). `backupPath` receives the backup path
 // when the backup could not be deleted afterwards (non-fatal).
 bool replaceFileSafely(const QString& replacement, const QString& target, QString* error = nullptr,
-                       int retryMs = 2000);
+                       int retryMs = 5000);
 }
