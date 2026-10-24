@@ -10,12 +10,13 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     MainWindow();
+    ~MainWindow() override;
     bool openFile(const QString& path);
     DocumentTab* current() const;
     QTabWidget* tabs() const { return m_tabs; }
 private:
     void buildActions();
-    void runOp(const std::function<pdfcore::OpResult(const QString& in, const QString& out)>& op);
+    void runOp(const std::function<pdfcore::OpResult(const QString& in, const QString& out)>& op, const QList<int>& affected = {});
     void rotate(int deg);
     void movePage(int delta);
     void deletePage();

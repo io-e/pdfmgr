@@ -1,7 +1,12 @@
 #include "Fixtures.h"
 #include <QTemporaryDir>
 #include <QFile>
-#include <QProcess>
+#include <qpdf/QPDF.hh>
+#include <qpdf/QPDFWriter.hh>
+#include <qpdf/QPDFJob.hh>
+#include <qpdf/QPDFLogger.hh>
+#include <sstream>
+#include <stdexcept>
 #include <QDir>
 #include <vector>
 #include <memory>
@@ -45,16 +50,66 @@ QString dir() {
         writePdf(d.filePath("landscape.pdf"), 2, "Delta", {842, 595});
         writePdf(d.filePath("unicode é.pdf"), 2, "Echo");
         QFile g(d.filePath("garbage.pdf")); g.open(QIODevice::WriteOnly); g.write("this is not a pdf");
+        writeFormPdf(d.filePath("form.pdf"), "name", "Foxtrot");
         // qpdf-generated variant with object streams (exercise a different file structure)
-        QProcess::execute(QPDF_EXE, {"--object-streams=generate", d.filePath("five.pdf"), d.filePath("objstm.pdf")});
+        QPDF q; q.processFile(d.filePath("five.pdf").toUtf8().constData());
+        QPDFWriter w(q, d.filePath("objstm.pdf").toUtf8().constData());
+        w.setObjectStreamMode(qpdf_o_generate);
+        w.write();
     }
     return g_dir->path();
 }
 QString path(const QString& name) { return QDir(dir()).filePath(name); }
 QString tmpFile(const QString& name) { return QDir(dir()).filePath("out-" + name); }
+// Equivalent of `qpdf --check file`, through the library (no qpdf executable).
+// Returns 0 when clean, like the CLI.
 int qpdfCheck(const QString& file, QString* out) {
-    QProcess p; p.start(QPDF_EXE, {"--check", file}); p.waitForFinished(30000);
-    if (out) *out = QString::fromLocal8Bit(p.readAllStandardOutput() + p.readAllStandardError());
-    return p.exitStatus() == QProcess::NormalExit ? p.exitCode() : -1;
+    std::ostringstream log;
+    try {
+        QPDFJob j;
+        auto logger = QPDFLogger::create();
+        logger->setOutputStreams(&log, &log);
+        j.setLogger(logger);
+        QByteArray f = file.toUtf8(); // QPDFJob paths are UTF-8 (wide on Windows internally)
+        j.config()->inputFile(f.constData())->check()->checkConfiguration();
+        j.run();
+        if (out) *out = QString::fromStdString(log.str());
+        return j.hasWarnings() ? 3 : j.getExitCode();
+    } catch (std::exception& e) {
+        if (out) *out = QString::fromStdString(log.str()) + e.what();
+        return 2;
+    }
+}
+
+// One page with one AcroForm text field `field` (value `value`) and a bookmark
+// "Section" pointing to the page.
+void writeFormPdf(const QString& path, const QString& field, const QString& value) {
+    QByteArray f = field.toLatin1(), v = value.toLatin1();
+    QByteArray stream = "BT /F1 18 Tf 72 700 Td (Form " + v + ") Tj ET";
+    QList<QByteArray> objs = {
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /NeedAppearances true /DA (/Helv 0 Tf 0 g) "
+        "/DR << /Font << /Helv 3 0 R >> >> >> /Outlines 7 0 R >>",
+        "<< /Type /Pages /Count 1 /Kids [4 0 R] >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> "
+        "/Contents 6 0 R /Annots [5 0 R] >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (" + f + ") /V (" + v + ") /Rect [72 600 300 630] /P 4 0 R "
+        "/DA (/Helv 12 Tf 0 g) /F 4 >>",
+        "<< /Length " + QByteArray::number(stream.size()) + " >>\nstream\n" + stream + "\nendstream",
+        "<< /Type /Outlines /First 8 0 R /Last 8 0 R /Count 1 >>",
+        "<< /Title (Section) /Parent 7 0 R /Dest [4 0 R /Fit] >>",
+    };
+    QByteArray pdf = "%PDF-1.7\n";
+    std::vector<qsizetype> off;
+    for (int i = 0; i < objs.size(); ++i) {
+        off.push_back(pdf.size());
+        pdf += QByteArray::number(i + 1) + " 0 obj\n" + objs[i] + "\nendobj\n";
+    }
+    qsizetype xref = pdf.size();
+    pdf += "xref\n0 " + QByteArray::number(objs.size() + 1) + "\n0000000000 65535 f \n";
+    for (auto o : off) pdf += QByteArray::number(o).rightJustified(10, '0') + " 00000 n \n";
+    pdf += "trailer\n<< /Size " + QByteArray::number(objs.size() + 1) + " /Root 1 0 R >>\nstartxref\n"
+         + QByteArray::number(xref) + "\n%%EOF\n";
+    QFile out(path); out.open(QIODevice::WriteOnly); out.write(pdf);
 }
 }

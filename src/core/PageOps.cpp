@@ -4,16 +4,38 @@
 #include <qpdf/QPDFWriter.hh>
 #include <qpdf/QPDFPageDocumentHelper.hh>
 #include <qpdf/QPDFPageObjectHelper.hh>
+#include <qpdf/QPDFAcroFormDocumentHelper.hh>
+#include <qpdf/QPDFOutlineDocumentHelper.hh>
+#include <qpdf/QPDFOutlineObjectHelper.hh>
+#include <qpdf/FileInputSource.hh>
 #include <qpdf/Buffer.hh>
+#include <QFile>
+#include <QFileInfo>
+#include <algorithm>
+#include <cstdio>
+#include <map>
 #include <memory>
+#include <string>
 #include <vector>
 #include <stdexcept>
 
 namespace pdfcore::PageOps {
 namespace {
+// Opens with a wide-character path on Windows (any Unicode file name), and the
+// native 8-bit encoding elsewhere. Never goes through the ANSI code page.
+FILE* openFile(const QString& path, bool write) {
+#ifdef Q_OS_WIN
+    return _wfopen(reinterpret_cast<const wchar_t*>(path.utf16()), write ? L"wb" : L"rb");
+#else
+    return std::fopen(QFile::encodeName(path).constData(), write ? "wb" : "rb");
+#endif
+}
 std::shared_ptr<QPDF> load(const QString& path) {
+    FILE* f = openFile(path, false);
+    if (!f) throw std::runtime_error("cannot open " + path.toStdString());
+    auto src = std::make_shared<FileInputSource>(path.toUtf8().constData(), f, true); // owns f
     auto q = std::make_shared<QPDF>();
-    q->processFile(path.toLocal8Bit().constData()); // TODO(windows): use wide path / InputSource for Unicode
+    q->processInputSource(src);
     return q;
 }
 QByteArray writeToMemory(QPDF& q) {
@@ -24,10 +46,63 @@ QByteArray writeToMemory(QPDF& q) {
     auto buf = w.getBufferSharedPointer();
     return QByteArray(reinterpret_cast<const char*>(buf->getBuffer()), qsizetype(buf->getSize()));
 }
+// Output goes through QSaveFile (temp file + atomic rename), which already uses
+// wide-character Win32 APIs, so Unicode output paths are safe on Windows too.
+// Writes are deferred until every QPDF (and its open input file) has been
+// destroyed: Windows cannot replace a file that is still open, which matters for
+// in-place operations (in == out). See guarded().
+struct PendingWrite { QString path; QByteArray data; };
+thread_local std::vector<PendingWrite>* t_pending = nullptr;
 void save(QPDF& q, const QString& out, OpResult& r) {
-    QString err;
-    if (!atomicWrite(out, writeToMemory(q), &err)) throw std::runtime_error(err.toStdString());
+    if (!t_pending) throw std::logic_error("save() outside guarded()");
+    t_pending->push_back({out, writeToMemory(q)});
     r.outputs << out;
+}
+
+struct OutlineNode { std::string title; QPDFObjectHandle page; std::vector<OutlineNode> kids; };
+
+std::vector<OutlineNode> collectOutlines(std::vector<QPDFOutlineObjectHelper> items,
+                                         const std::map<QPDFObjGen, QPDFObjectHandle>& pageMap, int depth = 0) {
+    std::vector<OutlineNode> out;
+    if (depth > 32) return out; // guard against malicious cycles
+    for (auto& o : items) {
+        OutlineNode n;
+        n.title = o.getTitle();
+        auto dp = o.getDestPage();
+        if (dp.isDictionary()) {
+            auto it = pageMap.find(dp.getObjGen());
+            if (it != pageMap.end()) n.page = it->second;
+        }
+        n.kids = collectOutlines(o.getKids(), pageMap, depth + 1);
+        if (n.page.isInitialized() || !n.kids.empty()) out.push_back(std::move(n));
+    }
+    return out;
+}
+
+// Writes `nodes` as children of `parent`; returns the number of visible descendants.
+int writeOutlines(QPDF& dst, QPDFObjectHandle parent, const std::vector<OutlineNode>& nodes) {
+    std::vector<QPDFObjectHandle> objs;
+    int count = 0;
+    for (auto& n : nodes) {
+        auto d = dst.makeIndirectObject(QPDFObjectHandle::newDictionary());
+        d.replaceKey("/Title", QPDFObjectHandle::newUnicodeString(n.title));
+        d.replaceKey("/Parent", parent);
+        if (n.page.isInitialized())
+            d.replaceKey("/Dest", QPDFObjectHandle::newArray(std::vector<QPDFObjectHandle>{n.page, QPDFObjectHandle::newName("/Fit")}));
+        if (!n.kids.empty()) count += writeOutlines(dst, d, n.kids);
+        objs.push_back(d);
+        ++count;
+    }
+    for (size_t i = 0; i < objs.size(); ++i) {
+        if (i > 0) objs[i].replaceKey("/Prev", objs[i - 1]);
+        if (i + 1 < objs.size()) objs[i].replaceKey("/Next", objs[i + 1]);
+    }
+    if (!objs.empty()) {
+        parent.replaceKey("/First", objs.front());
+        parent.replaceKey("/Last", objs.back());
+        parent.replaceKey("/Count", QPDFObjectHandle::newInteger(count));
+    }
+    return count;
 }
 // Build a new document containing `pages` of src, in order.
 void buildSubset(QPDF& src, const QList<int>& pages, const QString& out, OpResult& r) {
@@ -42,8 +117,19 @@ void buildSubset(QPDF& src, const QList<int>& pages, const QString& out, OpResul
 }
 template <class F> OpResult guarded(F f) {
     OpResult r;
-    try { f(r); r.ok = true; }
-    catch (std::exception& e) { r.ok = false; r.error = QString::fromUtf8(e.what()); }
+    std::vector<PendingWrite> pending;
+    t_pending = &pending;
+    try {
+        f(r); // all QPDF objects live inside f and are closed when it returns
+        t_pending = nullptr;
+        for (auto& w : pending) {
+            QString err;
+            if (!atomicWrite(w.path, w.data, &err)) throw std::runtime_error(err.toStdString());
+        }
+        r.ok = true;
+    }
+    catch (std::exception& e) { r.ok = false; r.error = QString::fromUtf8(e.what()); r.outputs.clear(); }
+    t_pending = nullptr;
     return r;
 }
 }
@@ -59,9 +145,43 @@ OpResult merge(const QStringList& inputs, const QString& out) {
         std::vector<std::shared_ptr<QPDF>> srcs; // must outlive the write
         QPDF dst; dst.emptyPDF();
         QPDFPageDocumentHelper dh(dst);
+        QPDFAcroFormDocumentHelper dstForms(dst);
+        std::vector<OutlineNode> outline;
+        bool needAppearances = false;
         for (const auto& in : inputs) {
             srcs.push_back(load(in));
-            for (auto& page : QPDFPageDocumentHelper(*srcs.back()).getAllPages()) dh.addPage(page, false);
+            QPDF& src = *srcs.back();
+            QPDFAcroFormDocumentHelper srcForms(src);
+            const bool hasForm = srcForms.hasAcroForm();
+            std::map<QPDFObjGen, QPDFObjectHandle> pageMap; // source page -> copied page
+            QPDFObjectHandle first;
+            for (auto& page : QPDFPageDocumentHelper(src).getAllPages()) {
+                dh.addPage(page, false);
+                QPDFObjectHandle copied = dst.getAllPages().back();
+                // Copies widget annotations' fields into the destination /AcroForm,
+                // renaming conflicting field names.
+                if (hasForm) dstForms.fixCopiedAnnotations(copied, page.getObjectHandle(), srcForms);
+                pageMap[page.getObjectHandle().getObjGen()] = copied;
+                if (!first.isInitialized()) first = copied;
+            }
+            if (hasForm) needAppearances |= srcForms.getNeedAppearances();
+            if (!first.isInitialized()) continue;
+            // One bookmark per input file, containing that file's own outline.
+            OutlineNode fileNode;
+            fileNode.title = QFileInfo(in).completeBaseName().toStdString();
+            fileNode.page = first;
+            QPDFOutlineDocumentHelper odh(src);
+            if (odh.hasOutlines()) fileNode.kids = collectOutlines(odh.getTopLevelOutlines(), pageMap);
+            outline.push_back(std::move(fileNode));
+        }
+        if (dstForms.hasAcroForm() && needAppearances) dstForms.setNeedAppearances(true);
+        if (inputs.size() > 1 || !outline.empty()) {
+            bool anyKids = std::any_of(outline.begin(), outline.end(), [](const OutlineNode& n) { return !n.kids.empty(); });
+            if (inputs.size() > 1 || anyKids) {
+                auto root = dst.makeIndirectObject(QPDFObjectHandle::parse("<< /Type /Outlines >>"));
+                writeOutlines(dst, root, inputs.size() > 1 ? outline : outline.front().kids);
+                dst.getRoot().replaceKey("/Outlines", root);
+            }
         }
         save(dst, out, r);
     });

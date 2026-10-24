@@ -3,6 +3,7 @@ add_library(pdfcore STATIC
   Document.h Document.cpp
   PageOps.h PageOps.cpp
   AtomicWrite.h AtomicWrite.cpp
+  CancelToken.h CancelToken.cpp
   JobQueue.h JobQueue.cpp
   PrintJob.h
   IPrintBackend.h

@@ -103,13 +103,13 @@ void MainWindow::buildActions() {
 
 static QString tempOut() { return QDir::temp().filePath("pdfmgr-op-" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".pdf"); }
 
-void MainWindow::runOp(const std::function<OpResult(const QString&, const QString&)>& op) {
+void MainWindow::runOp(const std::function<OpResult(const QString&, const QString&)>& op, const QList<int>& affected) {
     auto* t = current(); if (!t) return;
     // MVP: page ops run synchronously (small docs); TODO move to JobQueue with progress.
     QString out = tempOut();
     OpResult r = op(t->workingPath(), out);
     QString err;
-    if (!r.ok || !t->applyWorkingCopy(out, &err)) {
+    if (!r.ok || !t->applyWorkingCopy(out, &err, affected)) {
         QFile::remove(out);
         QMessageBox::warning(this, tr("Operation failed"), r.ok ? err : r.error);
     }
@@ -117,7 +117,7 @@ void MainWindow::runOp(const std::function<OpResult(const QString&, const QStrin
 void MainWindow::rotate(int deg) {
     auto* t = current(); if (!t) return;
     int p = t->currentPage();
-    runOp([=](const QString& in, const QString& out) { return PageOps::rotate(in, {p}, deg, out); });
+    runOp([=](const QString& in, const QString& out) { return PageOps::rotate(in, {p}, deg, out); }, {p});
 }
 void MainWindow::movePage(int d) {
     auto* t = current(); if (!t) return;
@@ -125,7 +125,7 @@ void MainWindow::movePage(int d) {
     if (q < 0 || q >= n) return;
     QList<int> order; for (int i = 0; i < n; ++i) order << i;
     order.swapItemsAt(p, q);
-    runOp([=](const QString& in, const QString& out) { return PageOps::reorder(in, order, out); });
+    runOp([=](const QString& in, const QString& out) { return PageOps::reorder(in, order, out); }, {p, q});
     t->setPage(q);
 }
 void MainWindow::deletePage() {
@@ -174,4 +174,10 @@ void MainWindow::print() {
     PrintJob j = d.job();
     j.file = t->workingPath(); // PrintService copies it to a temp PDF first
     m_print.enqueue(j);
+}
+
+// Tabs are child widgets, which ~QWidget would delete only after the members
+// (m_jobs, m_print) are gone; their destructors use m_jobs, so delete them first.
+MainWindow::~MainWindow() {
+    while (tabs()->count() > 0) delete tabs()->widget(0);
 }

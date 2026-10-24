@@ -1,3 +1,4 @@
+#include <QCoreApplication>
 #include <catch2/catch_test_macros.hpp>
 #include "SumatraBackend.h"
 #include "CupsBackend.h"
@@ -42,13 +43,14 @@ TEST_CASE("CUPS lp arguments", "[print][cups]") {
     CHECK(b.arguments(j).contains("page-set=even"));
 }
 
-// Fake backend running a shell snippet; lets us test the service without a printer.
+// Fake backend: re-runs this test binary in --fake-backend mode (see main.cpp),
+// so the service is tested without a printer, a shell or the qpdf CLI, on any OS.
 struct FakeBackend : IPrintBackend {
-    QString script; mutable QStringList lastFiles;
-    explicit FakeBackend(QString s) : script(std::move(s)) {}
+    QString mode; mutable QStringList lastFiles;
+    explicit FakeBackend(QString m) : mode(std::move(m)) {}
     QString name() const override { return "fake"; }
-    QString program() const override { return "/bin/sh"; }
-    QStringList arguments(const PrintJob& j) const override { lastFiles << j.file; return {"-c", script, "sh", j.file}; }
+    QString program() const override { return QCoreApplication::applicationFilePath(); }
+    QStringList arguments(const PrintJob& j) const override { lastFiles << j.file; return {"--fake-backend", mode, j.file}; }
 };
 
 static QList<QList<QVariant>> runAll(PrintService& s, int expected) {
@@ -60,7 +62,7 @@ static QList<QList<QVariant>> runAll(PrintService& s, int expected) {
 }
 
 TEST_CASE("PrintService prints a temp copy, in order", "[print][service]") {
-    auto* fb = new FakeBackend("qpdf --check \"$1\" >/dev/null && echo checked >&2");
+    auto* fb = new FakeBackend("check");
     PrintService s{std::unique_ptr<IPrintBackend>(fb)};
     PrintJob j; j.file = fixtures::path("three.pdf");
     auto id1 = s.enqueue(j); auto id2 = s.enqueue(j);
@@ -73,14 +75,14 @@ TEST_CASE("PrintService prints a temp copy, in order", "[print][service]") {
     CHECK_FALSE(QFile::exists(fb->lastFiles[0]));   // and cleaned it up
 }
 TEST_CASE("PrintService reports exit code, stderr and timeout", "[print][service]") {
-    PrintService s{std::make_unique<FakeBackend>("echo boom >&2; exit 3")};
+    PrintService s{std::make_unique<FakeBackend>("fail")};
     PrintJob j; j.file = fixtures::path("one.pdf");
     s.enqueue(j);
     auto r = runAll(s, 1);
     REQUIRE(r.size() == 1);
     CHECK_FALSE(r[0][1].toBool()); CHECK(r[0][2].toInt() == 3); CHECK(r[0][3].toString().contains("boom"));
 
-    PrintService t{std::make_unique<FakeBackend>("sleep 30")};
+    PrintService t{std::make_unique<FakeBackend>("sleep")};
     t.setTimeoutMs(300);
     t.enqueue(j);
     auto r2 = runAll(t, 1);
@@ -88,7 +90,7 @@ TEST_CASE("PrintService reports exit code, stderr and timeout", "[print][service
     CHECK_FALSE(r2[0][1].toBool()); CHECK(r2[0][3].toString().contains("timeout"));
 
     PrintJob bad; bad.file = fixtures::path("garbage.pdf");
-    PrintService u{std::make_unique<FakeBackend>("true")};
+    PrintService u{std::make_unique<FakeBackend>("ok")};
     u.enqueue(bad);
     auto r3 = runAll(u, 1);
     REQUIRE(r3.size() == 1);

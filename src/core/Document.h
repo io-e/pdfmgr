@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <atomic>
+#include "CancelToken.h"
 struct fz_document;
 
 namespace pdfcore {
@@ -22,9 +23,9 @@ public:
     QString path() const { return m_path; }
     int pageCount() const { return m_pageCount; }
     QSizeF pageSize(int page) const; // points
-    // abort: optional flag, checked through fz_cookie.
-    QImage render(int page, double zoom, const std::atomic<bool>* abort = nullptr) const;
-    QImage thumbnail(int page, int maxSide = 160) const;
+    // cancel: optional token; its fz_cookie is passed straight to MuPDF.
+    QImage render(int page, double zoom, const CancelToken* cancel = nullptr) const;
+    QImage thumbnail(int page, int maxSide = 160, const CancelToken* cancel = nullptr) const;
     QString pageText(int page) const;
     QList<SearchHit> search(const QString& needle, int maxHitsPerPage = 64) const;
 private:

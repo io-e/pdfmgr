@@ -11,10 +11,16 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QUuid>
+#include <QScrollBar>
+#include <QTimer>
+#include <algorithm>
 
 using namespace pdfcore;
 
-DocumentTab::DocumentTab(JobQueue* jobs, QWidget* parent) : QWidget(parent), m_jobs(jobs) {
+DocumentTab::DocumentTab(JobQueue* jobs, QWidget* parent)
+    : QWidget(parent), m_jobs(jobs), m_tabId(JobQueue::newOwnerId()) {
+    m_thumbTimer = new QTimer(this); m_thumbTimer->setSingleShot(true); m_thumbTimer->setInterval(30);
+    connect(m_thumbTimer, &QTimer::timeout, this, &DocumentTab::requestVisibleThumbs);
     m_thumbs = new QListWidget;
     m_thumbs->setViewMode(QListView::IconMode);
     m_thumbs->setFlow(QListView::TopToBottom);
@@ -27,11 +33,12 @@ DocumentTab::DocumentTab(JobQueue* jobs, QWidget* parent) : QWidget(parent), m_j
     auto* split = new QSplitter; split->addWidget(m_thumbs); split->addWidget(m_scroll);
     split->setStretchFactor(1, 1);
     auto* l = new QHBoxLayout(this); l->setContentsMargins(0, 0, 0, 0); l->addWidget(split);
+    connect(m_thumbs->verticalScrollBar(), &QScrollBar::valueChanged, this, &DocumentTab::scheduleThumbs);
     connect(m_thumbs, &QListWidget::currentRowChanged, this, [this](int r) { if (r >= 0 && r != m_page) setPage(r); });
     connect(m_jobs, &JobQueue::renderFinished, this, [this](quint64, quint64 gen, QVariant v) {
         if (gen != m_jobs->generation()) return;
         auto m = v.toMap();
-        if (m.value("tab").value<quintptr>() != quintptr(this) || m.value("page").toInt() != m_page) return;
+        if (m.value("tab").toULongLong() != m_tabId || m.value("page").toInt() != m_page) return;
         QImage img = m.value("img").value<QImage>();
         if (m_hitIndex >= 0 && m_hitIndex < m_hits.size() && m_hits[m_hitIndex].page == m_page) {
             QPainter p(&img);
@@ -41,13 +48,34 @@ DocumentTab::DocumentTab(JobQueue* jobs, QWidget* parent) : QWidget(parent), m_j
     });
     connect(m_jobs, &JobQueue::finished, this, [this](quint64, QVariant v) {
         auto m = v.toMap();
-        if (m.value("kind") != "thumb" || m.value("tab").value<quintptr>() != quintptr(this) || m.value("gen").toULongLong() != m_thumbGen) return;
-        int p = m.value("page").toInt();
-        if (auto* it = m_thumbs->item(p)) it->setIcon(QIcon(QPixmap::fromImage(m.value("img").value<QImage>())));
+        if (m.value("kind") != "thumb" || m.value("tab").toULongLong() != m_tabId || m.value("gen").toULongLong() != m_thumbGen) return;
+        --m_thumbBatches;
+        const auto pages = m.value("pages").toList();
+        const auto imgs = m.value("imgs").toList();
+        for (int i = 0; i < pages.size() && i < imgs.size(); ++i) {
+            int p = pages[i].toInt();
+            m_thumbQueued.remove(p);
+            if (p < 0 || p >= m_thumbReady.size()) continue;
+            if (auto* it = m_thumbs->item(p)) it->setIcon(QIcon(QPixmap::fromImage(imgs[i].value<QImage>())));
+            m_thumbReady[p] = true;
+        }
+        scheduleThumbs(); // next visible batch, if any
     });
 }
 
-DocumentTab::~DocumentTab() { m_jobs->bumpGeneration(); if (!m_working.isEmpty()) QFile::remove(m_working); }
+// Cancels and waits for this tab's jobs only, then drops the MuPDF document so
+// no handle on the working file remains (Windows cannot rename/delete open files).
+void DocumentTab::releaseDocument() {
+    m_jobs->cancelOwner(m_tabId);
+    m_jobs->waitForOwner(m_tabId);
+    m_doc.reset();
+    ++m_thumbGen; m_thumbQueued.clear(); m_thumbBatches = 0;
+}
+
+DocumentTab::~DocumentTab() {
+    releaseDocument();
+    if (!m_working.isEmpty()) removeWithRetry(m_working, 1000);
+}
 
 DocumentTab* DocumentTab::open(const QString& path, JobQueue* jobs, QString* error, QWidget* parent) {
     auto* t = new DocumentTab(jobs, parent);
@@ -58,43 +86,79 @@ DocumentTab* DocumentTab::open(const QString& path, JobQueue* jobs, QString* err
     return t;
 }
 
-bool DocumentTab::load(const QString& file, QString* error) {
+bool DocumentTab::load(const QString& file, QString* error, const QList<int>& affected, bool keepThumbs) {
     auto d = Document::open(file, error);
     if (!d) return false;
+    keepThumbs = keepThumbs && m_thumbReady.size() == d->pageCount();
     m_doc = d;
     m_hits.clear(); m_hitIndex = -1;
     m_page = std::clamp(m_page, 0, std::max(0, d->pageCount() - 1));
-    loadThumbnails();
+    resetThumbnails(affected, keepThumbs);
     requestRender();
     emit stateChanged();
     return true;
 }
 
-void DocumentTab::loadThumbnails() {
+void DocumentTab::resetThumbnails(const QList<int>& affected, bool keepThumbs) {
     ++m_thumbGen;
-    m_thumbs->blockSignals(true);
-    m_thumbs->clear();
-    QPixmap blank(120, 160); blank.fill(Qt::lightGray);
-    for (int i = 0; i < m_doc->pageCount(); ++i) m_thumbs->addItem(new QListWidgetItem(QIcon(blank), QString::number(i + 1)));
-    m_thumbs->setCurrentRow(m_page);
-    m_thumbs->blockSignals(false);
-    auto doc = m_doc; quint64 gen = m_thumbGen; quintptr self = quintptr(this);
-    for (int i = 0; i < doc->pageCount(); ++i)
-        m_jobs->submit([doc, i, gen, self] {
-            return QVariantMap{{"kind", "thumb"}, {"tab", QVariant::fromValue(self)}, {"gen", gen}, {"page", i}, {"img", doc->thumbnail(i, 150)}};
-        });
+    m_thumbQueued.clear(); m_thumbBatches = 0;
+    const int n = m_doc->pageCount();
+    if (keepThumbs) {
+        // Same page count: only the affected pages need new thumbnails.
+        if (affected.isEmpty()) m_thumbReady.fill(false);
+        for (int p : affected) if (p >= 0 && p < n) m_thumbReady[p] = false;
+    } else {
+        m_thumbs->blockSignals(true);
+        m_thumbs->clear();
+        QPixmap blank(120, 160); blank.fill(Qt::lightGray);
+        for (int i = 0; i < n; ++i) m_thumbs->addItem(new QListWidgetItem(QIcon(blank), QString::number(i + 1)));
+        m_thumbReady = QVector<bool>(n, false);
+        m_thumbs->blockSignals(false);
+    }
+    m_thumbs->blockSignals(true); m_thumbs->setCurrentRow(m_page); m_thumbs->blockSignals(false);
+    scheduleThumbs();
+}
+
+void DocumentTab::scheduleThumbs() { if (!m_thumbTimer->isActive()) m_thumbTimer->start(); }
+
+// Renders only the thumbnails around the visible part of the list, in batches,
+// with at most kMaxThumbBatches outstanding per tab. Scrolling requests more.
+void DocumentTab::requestVisibleThumbs() {
+    if (!m_doc) return;
+    const int n = m_doc->pageCount();
+    if (n == 0) return;
+    auto* vp = m_thumbs->viewport();
+    int first = m_thumbs->indexAt(QPoint(vp->width() / 2, 5)).row();
+    int last = m_thumbs->indexAt(QPoint(vp->width() / 2, vp->height() - 5)).row();
+    if (first < 0) first = std::max(0, m_thumbs->currentRow());
+    if (last < first) last = std::min(n - 1, first + 8); // not laid out yet: guess one screen
+    first = std::max(0, first - kThumbMargin);
+    last = std::min(n - 1, last + kThumbMargin);
+    QList<int> todo;
+    for (int p = first; p <= last; ++p) if (!m_thumbReady[p] && !m_thumbQueued.contains(p)) todo << p;
+    auto doc = m_doc; quint64 gen = m_thumbGen; quint64 tab = m_tabId;
+    for (int i = 0; i < todo.size() && m_thumbBatches < kMaxThumbBatches; i += kThumbBatch) {
+        QList<int> batch = todo.mid(i, kThumbBatch);
+        for (int p : batch) m_thumbQueued.insert(p);
+        ++m_thumbBatches;
+        m_jobs->submit([doc, batch, gen, tab] {
+            QVariantList pages, imgs;
+            for (int p : batch) { pages << p; imgs << doc->thumbnail(p, 150); }
+            return QVariant(QVariantMap{{"kind", "thumb"}, {"tab", tab}, {"gen", gen}, {"pages", pages}, {"imgs", imgs}});
+        }, m_tabId);
+    }
 }
 
 void DocumentTab::requestRender() {
     if (!m_doc) return;
     quint64 gen = m_jobs->bumpGeneration(); // stale tiles get discarded
-    auto doc = m_doc; int page = m_page; double z = m_zoom * devicePixelRatioF(); quintptr self = quintptr(this);
+    auto doc = m_doc; int page = m_page; double z = m_zoom * devicePixelRatioF(); quint64 tab = m_tabId;
     double dpr = devicePixelRatioF();
-    m_jobs->submitRender(gen, [doc, page, z, self, dpr](const std::atomic<bool>& abort) {
-        QImage img = doc->render(page, z, &abort);
+    m_jobs->submitRender(gen, [doc, page, z, tab, dpr](const CancelToken& cancel) {
+        QImage img = doc->render(page, z, &cancel);
         img.setDevicePixelRatio(dpr);
-        return QVariant(QVariantMap{{"tab", QVariant::fromValue(self)}, {"page", page}, {"img", img}});
-    });
+        return QVariant(QVariantMap{{"tab", tab}, {"page", page}, {"img", img}});
+    }, m_tabId);
     emit status(tr("Page %1 / %2 — zoom %3%").arg(m_page + 1).arg(pageCount()).arg(int(m_zoom * 100)));
 }
 
@@ -122,14 +186,23 @@ void DocumentTab::findNext() {
     emit status(tr("Match %1 / %2 (page %3)").arg(m_hitIndex + 1).arg(m_hits.size()).arg(m_page + 1));
 }
 
-bool DocumentTab::applyWorkingCopy(const QString& newFile, QString* error) {
-    m_doc.reset();
-    m_jobs->bumpGeneration();
-    m_jobs->waitForDone(); // no worker may still hold the old document
-    QFile::remove(m_working);
-    if (!QFile::rename(newFile, m_working)) { if (error) *error = "cannot replace working file"; return false; }
+bool DocumentTab::applyWorkingCopy(const QString& newFile, QString* error, const QList<int>& affectedPages) {
+    {   // Validate before touching anything; the probe's handle is closed right away.
+        QString perr;
+        auto probe = Document::open(newFile, &perr);
+        if (!probe) { if (error) *error = tr("operation result is not a valid PDF: %1").arg(perr); return false; }
+    }
+    releaseDocument(); // this tab's jobs only; closes our handle on m_working
+    QString err;
+    if (!replaceFileSafely(newFile, m_working, &err)) {
+        QString rerr;
+        if (!load(m_working, &rerr)) err += "; " + tr("reload failed: %1").arg(rerr);
+        if (error) *error = err;
+        emit status(err);
+        return false;
+    }
     m_modified = true;
-    return load(m_working, error);
+    return load(m_working, error, affectedPages, true);
 }
 
 bool DocumentTab::saveTo(const QString& path, QString* error) {

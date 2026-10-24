@@ -2,8 +2,7 @@
 #include "MuPdfContext.h"
 #include <mupdf/fitz.h>
 #include <vector>
-#include <thread>
-#include <chrono>
+#include <algorithm>
 
 namespace pdfcore {
 
@@ -47,7 +46,7 @@ QSizeF Document::pageSize(int page) const {
     return QSizeF(r.x1 - r.x0, r.y1 - r.y0);
 }
 
-QImage Document::render(int page, double zoom, const std::atomic<bool>* abort) const {
+QImage Document::render(int page, double zoom, const CancelToken* cancel) const {
     if (page < 0 || page >= m_pageCount || zoom <= 0) return {};
     ScopedClone ctx;
     fz_display_list* list = nullptr;
@@ -64,15 +63,9 @@ QImage Document::render(int page, double zoom, const std::atomic<bool>* abort) c
         fz_always(ctx) { fz_drop_page(ctx, pg); }
         fz_catch(ctx) { return {}; }
     }
-    fz_cookie cookie{};
-    std::atomic<bool> done{false};
-    std::thread watcher;
-    if (abort) watcher = std::thread([&] {
-        while (!done.load()) {
-            if (abort->load()) { cookie.abort = 1; break; }
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-    });
+    fz_cookie local{};
+    fz_cookie* cookie = cancel ? static_cast<fz_cookie*>(cancel->nativeCookie()) : &local;
+    if (cancel && cancel->isCancelled()) { fz_drop_display_list(ctx, list); return {}; }
     QImage img;
     fz_pixmap* pix = nullptr;
     fz_device* dev = nullptr;
@@ -83,9 +76,9 @@ QImage Document::render(int page, double zoom, const std::atomic<bool>* abort) c
         pix = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), ib, nullptr, 0);
         fz_clear_pixmap_with_value(ctx, pix, 0xff);
         dev = fz_new_draw_device(ctx, fz_identity, pix);
-        fz_run_display_list(ctx, list, dev, ctm, fz_infinite_rect, &cookie);
+        fz_run_display_list(ctx, list, dev, ctm, fz_infinite_rect, cookie);
         fz_close_device(ctx, dev);
-        if (!cookie.abort) {
+        if (!(cancel && cancel->isCancelled())) {
             int w = fz_pixmap_width(ctx, pix), h = fz_pixmap_height(ctx, pix);
             QImage tmp(fz_pixmap_samples(ctx, pix), w, h, fz_pixmap_stride(ctx, pix), QImage::Format_RGB888);
             img = tmp.copy();
@@ -93,16 +86,14 @@ QImage Document::render(int page, double zoom, const std::atomic<bool>* abort) c
     }
     fz_always(ctx) { fz_drop_device(ctx, dev); fz_drop_pixmap(ctx, pix); fz_drop_display_list(ctx, list); }
     fz_catch(ctx) { img = QImage(); }
-    done = true;
-    if (watcher.joinable()) watcher.join();
     return img;
 }
 
-QImage Document::thumbnail(int page, int maxSide) const {
+QImage Document::thumbnail(int page, int maxSide, const CancelToken* cancel) const {
     QSizeF s = pageSize(page);
     if (s.isEmpty()) return {};
     double zoom = maxSide / std::max(s.width(), s.height());
-    return render(page, zoom);
+    return render(page, zoom, cancel);
 }
 
 QString Document::pageText(int page) const {
