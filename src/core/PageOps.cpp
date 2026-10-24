@@ -44,10 +44,20 @@ std::shared_ptr<QPDF> load(const QString& path) {
 void keepEncryption(QPDFWriter& w, QPDF* encFrom) {
     if (encFrom && encFrom->isEncrypted()) w.copyEncryptionParameters(*encFrom);
 }
-QByteArray writeToMemory(QPDF& q, QPDF* encFrom = nullptr, bool decrypt = false) {
+struct Canceled : std::runtime_error { Canceled() : std::runtime_error("canceled") {} };
+// Throws Canceled from inside QPDFWriter when `keepGoing` returns false; the
+// writer is abandoned and its (in-memory) output dropped.
+using KeepGoing = std::function<bool(int writePercent)>;
+QByteArray writeToMemory(QPDF& q, QPDF* encFrom = nullptr, bool decrypt = false,
+                         const KeepGoing& keepGoing = {}) {
     QPDFWriter w(q);
     keepEncryption(w, encFrom);
     if (decrypt) w.setPreserveEncryption(false);
+    if (keepGoing) {
+        if (!keepGoing(0)) throw Canceled();
+        w.registerProgressReporter(std::make_shared<QPDFWriter::FunctionProgressReporter>(
+            [keepGoing](int pct) { if (!keepGoing(pct)) throw Canceled(); }));
+    }
     w.setOutputMemory();
     w.setObjectStreamMode(qpdf_o_preserve);
     w.write();
@@ -78,9 +88,10 @@ void writeToFile(QPDF& q, const QString& out, QPDF* encFrom = nullptr) {
 // in-place operations (in == out). See guarded().
 struct PendingWrite { QString path; QByteArray data; };
 thread_local std::vector<PendingWrite>* t_pending = nullptr;
-void save(QPDF& q, const QString& out, OpResult& r, QPDF* encFrom = nullptr, bool decrypt = false) {
+void save(QPDF& q, const QString& out, OpResult& r, QPDF* encFrom = nullptr, bool decrypt = false,
+          const KeepGoing& keepGoing = {}) {
     if (!t_pending) throw std::logic_error("save() outside guarded()");
-    t_pending->push_back({out, writeToMemory(q, encFrom, decrypt)});
+    t_pending->push_back({out, writeToMemory(q, encFrom, decrypt, keepGoing)});
     r.outputs << out;
 }
 
@@ -164,23 +175,40 @@ int pageCount(const QString& in, QString* error) {
     catch (std::exception& e) { if (error) *error = e.what(); return -1; }
 }
 
-OpResult merge(const QStringList& inputs, const QString& out) {
+// Progress for cancellable ops: pages first, then the write (0..100%).
+struct OpProgress {
+    const Progress& progress;
+    int pages = 0, done = 0;
+    void page() { ++done; if (progress && !progress(done, pages + 100)) throw Canceled(); }
+    KeepGoing writer() const {
+        if (!progress) return {};
+        return [this](int pct) { return progress(pages + std::clamp(pct, 0, 100), pages + 100); };
+    }
+};
+
+OpResult merge(const QStringList& inputs, const QString& out, const Progress& progress) {
     return guarded([&](OpResult& r) {
         if (inputs.isEmpty()) throw std::runtime_error("no inputs");
         std::vector<std::shared_ptr<QPDF>> srcs; // must outlive the write
+        OpProgress op{progress};
+        for (const auto& in : inputs) {
+            srcs.push_back(load(in));
+            op.pages += int(QPDFPageDocumentHelper(*srcs.back()).getAllPages().size());
+        }
+        size_t srcIndex = 0;
         QPDF dst; dst.emptyPDF();
         QPDFPageDocumentHelper dh(dst);
         QPDFAcroFormDocumentHelper dstForms(dst);
         std::vector<OutlineNode> outline;
         bool needAppearances = false;
         for (const auto& in : inputs) {
-            srcs.push_back(load(in));
-            QPDF& src = *srcs.back();
+            QPDF& src = *srcs[srcIndex++];
             QPDFAcroFormDocumentHelper srcForms(src);
             const bool hasForm = srcForms.hasAcroForm();
             std::map<QPDFObjGen, QPDFObjectHandle> pageMap; // source page -> copied page
             QPDFObjectHandle first;
             for (auto& page : QPDFPageDocumentHelper(src).getAllPages()) {
+                op.page(); // cancel point between pages
                 dh.addPage(page, false);
                 QPDFObjectHandle copied = dst.getAllPages().back();
                 // Copies widget annotations' fields into the destination /AcroForm,
@@ -208,7 +236,7 @@ OpResult merge(const QStringList& inputs, const QString& out) {
                 dst.getRoot().replaceKey("/Outlines", root);
             }
         }
-        save(dst, out, r, srcs.empty() ? nullptr : srcs.front().get());
+        save(dst, out, r, srcs.empty() ? nullptr : srcs.front().get(), false, op.writer());
     });
 }
 
@@ -259,18 +287,21 @@ OpResult reorder(const QString& in, const QList<int>& order, const QString& out)
     return extract(in, order, out);
 }
 
-OpResult rotate(const QString& in, const QList<int>& pages, int degrees, const QString& out) {
+OpResult rotate(const QString& in, const QList<int>& pages, int degrees, const QString& out, const Progress& progress) {
     return guarded([&](OpResult& r) {
+        OpProgress op{progress};
         if (degrees % 90 != 0) throw std::runtime_error("rotation must be a multiple of 90");
         auto q = load(in);
         auto all = QPDFPageDocumentHelper(*q).getAllPages();
         QList<int> sel = pages;
         if (sel.isEmpty()) for (int i = 0; i < int(all.size()); ++i) sel << i;
+        op.pages = int(sel.size());
         for (int p : sel) {
             if (p < 0 || p >= int(all.size())) throw std::runtime_error("page index out of range");
+            op.page();
             all[size_t(p)].rotatePage(degrees, true);
         }
-        save(*q, out, r);
+        save(*q, out, r, nullptr, false, op.writer());
     });
 }
 

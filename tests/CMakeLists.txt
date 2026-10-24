@@ -1,7 +1,7 @@
 find_package(Catch2 3 REQUIRED)
 add_executable(pdfcore_tests
   main.cpp Fixtures.h Fixtures.cpp Corpus.h Corpus.cpp test_corpus.cpp
-  test_document.cpp test_password.cpp test_pageops.cpp test_print.cpp test_jobqueue.cpp test_fileops.cpp test_tilecache.cpp)
+  test_document.cpp test_password.cpp test_pageops.cpp test_print.cpp test_jobqueue.cpp test_fileops.cpp test_tilecache.cpp test_cancel.cpp)
 # The qpdf C++ API (QPDFJob) replaces the qpdf CLI for fixtures and --check,
 # so the tests need no qpdf executable (not available on the Windows runner).
 target_link_libraries(pdfcore_tests PRIVATE pdfcore pdfmgr_qpdf Qt6::Test Catch2::Catch2)

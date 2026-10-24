@@ -26,9 +26,13 @@ private:
     QByteArray m_prev;
 };
 int pageCount(const QString& in, QString* error = nullptr);
-OpResult merge(const QStringList& inputs, const QString& out);
 // Progress callback: (units done, units total). Return false to cancel.
 using Progress = std::function<bool(int done, int total)>;
+// Cancellable operations (merge, rotate): `progress` is polled between pages
+// and while QPDF writes objects (units = pages + 100 write percent). On cancel
+// the result is {ok=false, error="canceled"}, no partial output is left behind
+// and the inputs (including an in-place `out`) are untouched.
+OpResult merge(const QStringList& inputs, const QString& out, const Progress& progress = {});
 // Split into chunks of `pagesPerFile`; files named <outPrefix>-<n>.pdf (1-based).
 // Each output is written to disk (temp file + atomic rename) as soon as it is
 // built, so memory stays bounded by one chunk. Progress counts output files.
@@ -39,7 +43,8 @@ OpResult extract(const QString& in, const QList<int>& pages, const QString& out)
 // newOrder: permutation of 0..n-1 (or subset; missing pages are dropped).
 OpResult reorder(const QString& in, const QList<int>& newOrder, const QString& out);
 // Relative rotation in multiples of 90 applied via /Rotate. Empty pages = all.
-OpResult rotate(const QString& in, const QList<int>& pages, int degrees, const QString& out);
+OpResult rotate(const QString& in, const QList<int>& pages, int degrees, const QString& out,
+                const Progress& progress = {});
 // Rewrite (e.g. to save a temp copy for printing).
 OpResult copy(const QString& in, const QString& out);
 // Rewrite without encryption (temp copy for printing an unlocked file).
