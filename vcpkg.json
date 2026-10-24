@@ -2,6 +2,6 @@
   "name": "pdfmgr",
   "version-string": "0.1.0",
   "description": "Windows PDF Manager (Qt 6, MuPDF, QPDF, SumatraPDF)",
-  "dependencies": [ "mupdf", "qpdf", "catch2" ],
-  "builtin-baseline": "0000000000000000000000000000000000000000"
+  "dependencies": [ "libmupdf", "qpdf", "catch2" ],
+  "builtin-baseline": "0c2a9ace1964b818b15f7ae50ba1c42404918a7b"
 }

@@ -1,22 +1,46 @@
-# UNTESTED skeleton: never run yet. Fix the vcpkg baseline, the Sumatra pin/hash
-# and the vcpkg port/target names (mupdf -> unofficial::mupdf) on the first run.
-name: windows
-on: [push, pull_request, workflow_dispatch]
+# Windows build (MSVC + vcpkg) and Debian-family build (Ubuntu 24.04 system packages).
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 env:
   QT_VERSION: "6.8.3"
-  SUMATRA_VERSION: "3.5.2"
-  SUMATRA_SHA256: "REPLACE_ME"
+  # Pinned portable SumatraPDF (https://www.sumatrapdfreader.org/download-free-pdf-viewer)
+  SUMATRA_VERSION: "3.6.1"
+  SUMATRA_SHA256: "98b33a518d42986856d225064b0cd2d3643ecf78cbf84ab873d26cc51877a544"
+  # Must match "builtin-baseline" in vcpkg.json.
+  VCPKG_COMMIT: "0c2a9ace1964b818b15f7ae50ba1c42404918a7b"
 jobs:
-  build:
+  windows:
     runs-on: windows-latest
+    timeout-minutes: 150
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-bincache
     steps:
       - uses: actions/checkout@v4
+      - uses: lukka/get-cmake@latest
       - uses: ilammy/msvc-dev-cmd@v1
         with: { arch: x64 }
       - uses: jurplel/install-qt-action@v4
         with: { version: "${{ env.QT_VERSION }}", arch: win64_msvc2022_64, cache: true }
+      - name: Prepare vcpkg binary cache dir
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force "$env:VCPKG_DEFAULT_BINARY_CACHE" | Out-Null
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-bin-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-bin-${{ env.VCPKG_COMMIT }}-
       - uses: lukka/run-vcpkg@v11
-        with: { vcpkgJsonGlob: vcpkg.json }
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+          vcpkgJsonGlob: vcpkg.json
+          runVcpkgInstall: false
       - name: Configure
         run: cmake --preset windows-msvc-release
       - name: Build
@@ -29,15 +53,35 @@ jobs:
         run: |
           $u = "https://www.sumatrapdfreader.org/dl/rel/$env:SUMATRA_VERSION/SumatraPDF-$env:SUMATRA_VERSION-64.zip"
           Invoke-WebRequest $u -OutFile sumatra.zip
-          if ((Get-FileHash sumatra.zip -Algorithm SHA256).Hash -ne $env:SUMATRA_SHA256) { throw "Sumatra hash mismatch" }
+          $h = (Get-FileHash sumatra.zip -Algorithm SHA256).Hash
+          if ($h -ne $env:SUMATRA_SHA256) { throw "Sumatra hash mismatch: $h" }
           Expand-Archive sumatra.zip -DestinationPath sumatra
       - name: Deploy
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item build/windows-msvc-release/src/gui/pdfgui.exe dist/
+          Get-ChildItem build/windows-msvc-release/src/gui -Filter *.dll | Copy-Item -Destination dist/
           Copy-Item (Get-ChildItem sumatra -Filter SumatraPDF*.exe | Select-Object -First 1).FullName dist/SumatraPDF.exe
           windeployqt --release --no-translations dist/pdfgui.exe
       # TODO: WiX/Inno Setup packaging and code signing
       - uses: actions/upload-artifact@v4
         with: { name: pdfmgr-windows, path: dist }
+
+  ubuntu:
+    runs-on: ubuntu-24.04   # Qt 6.4, qpdf 11.9, static MuPDF 1.23
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qt6-base-dev cmake ninja-build g++ pkg-config \
+            libmupdf-dev libqpdf-dev catch2 \
+            libharfbuzz-dev libfreetype-dev libjbig2dec0-dev libopenjp2-7-dev libgumbo-dev libmujs-dev \
+            libjpeg-dev zlib1g-dev libgl-dev
+      - name: Configure (warnings are errors)
+        run: cmake --preset release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+      - name: Build (no display)
+        run: env -u DISPLAY cmake --build --preset release
+      - name: Test
+        run: ctest --preset release
