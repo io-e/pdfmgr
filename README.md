@@ -1,7 +1,10 @@
 # PDF Manager — Phase 1 (MVP)
 
 Qt 6 / C++20. `pdfcore` (MuPDF render/search, QPDF page ops, JobQueue, PrintService) + `pdfgui` (Qt Widgets).
-See `windows-pdf-manager-architecture.md`.
+## Documentation
+- [Architecture (document de référence)](docs/windows-pdf-manager-architecture.md)
+- [Dossier d'architecture et de planification](docs/dossier-architecture-planification.md)
+
 
 ## Debian
     sudo apt install qt6-base-dev cmake ninja-build g++ libmupdf-dev libqpdf-dev catch2 qpdf cups-client pkg-config
