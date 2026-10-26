@@ -13,6 +13,8 @@ add_library(pdfcore STATIC
   PrintService.h PrintService.cpp
   Version.h Version.cpp
   Logging.h Logging.cpp
+  ZoneModel.h ZoneModel.cpp
+  ZoneXmlIO.h ZoneXmlIO.cpp
 )
 target_include_directories(pdfcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # QtGui only for QImage; no Qt Widgets dependency in the core.
