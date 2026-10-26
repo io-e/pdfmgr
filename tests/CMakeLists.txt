@@ -1,7 +1,7 @@
 find_package(Catch2 3 REQUIRED)
 add_executable(pdfcore_tests
   main.cpp Fixtures.h Fixtures.cpp Corpus.h Corpus.cpp test_corpus.cpp
-  test_document.cpp test_password.cpp test_pageops.cpp test_print.cpp test_jobqueue.cpp test_fileops.cpp test_tilecache.cpp test_cancel.cpp)
+  test_document.cpp test_password.cpp test_pageops.cpp test_print.cpp test_jobqueue.cpp test_fileops.cpp test_tilecache.cpp test_cancel.cpp test_zones.cpp)
 # The qpdf C++ API (QPDFJob) replaces the qpdf CLI for fixtures and --check,
 # so the tests need no qpdf executable (not available on the Windows runner).
 target_link_libraries(pdfcore_tests PRIVATE pdfcore pdfmgr_qpdf Qt6::Test Catch2::Catch2)
@@ -27,3 +27,14 @@ target_link_libraries(pdfcore_print_tests PRIVATE pdfcore pdfmgr_qpdf Qt6::Test 
 add_test(NAME print_to_pdf COMMAND pdfcore_print_tests)
 set_tests_properties(print_to_pdf PROPERTIES LABELS print SKIP_RETURN_CODE 4 TIMEOUT 300
   ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Zone XML samples (tests/zones) and the XSD (schemas/) are read from the source tree.
+target_compile_definitions(pdfcore_tests PRIVATE PDFMGR_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+
+# XSD validation with xmllint when available (installed in the Ubuntu CI job).
+find_program(XMLLINT_EXECUTABLE xmllint)
+if(XMLLINT_EXECUTABLE)
+  target_compile_definitions(pdfcore_tests PRIVATE PDFMGR_XMLLINT="${XMLLINT_EXECUTABLE}")
+  add_test(NAME zones_xsd_sample COMMAND ${XMLLINT_EXECUTABLE} --noout
+    --schema ${PROJECT_SOURCE_DIR}/schemas/pdfmgr-zones.xsd ${PROJECT_SOURCE_DIR}/tests/zones/sample.zones.xml)
+endif()

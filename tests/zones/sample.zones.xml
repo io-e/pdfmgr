@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<pdfZones xmlns="urn:io-e:pdfmgr:zones:1" version="1.0"
+          source="manuel_partie_1.pdf"
+          sourceSha256="9f2c"
+          unit="pt"
+          generator="pdfmgr-cli 0.2.0"
+          created="2026-10-26T13:30:00+01:00">
+  <margins page="*" top="42.5" bottom="38.0" left="51.0" right="49.5" origin="auto" confidence="0.95"/>
+  <page number="3" width="595.28" height="841.89" rotation="0">
+    <margins top="40.0" bottom="36.0" left="50.0" right="48.0" origin="manual"/>
+    <zone id="p3-z1" type="header" x="50" y="20" w="495" h="18" order="0" source="auto" confidence="0.97"/>
+    <zone id="p3-z2" type="title" x="50" y="60" w="495" h="30" order="1" source="auto" confidence="0.91" chapter="Ch02"/>
+    <zone id="p3-z3" type="text" x="50" y="100" w="495" h="300" order="2" source="auto" confidence="0.88" lang="fra">
+      <text engine="tesseract" confidence="0.92">Soit f une fonction définie sur [a,b]...</text>
+      <alt engine="paddleocr" confidence="0.89">Soit f une fonction définie sur [a, b]...</alt>
+    </zone>
+    <zone id="p3-z4" type="formula" x="120" y="410" w="300" h="40" order="3" source="manual" locked="true">
+      <latex engine="pix2text-mfr" confidence="0.95">\int_0^1 x^2\,dx = \tfrac{1}{3}</latex>
+      <latex engine="unimernet" confidence="0.93">\int_{0}^{1} x^{2}\, dx = \tfrac{1}{3}</latex>
+      <latex engine="pix2tex">\int_0^1 x^2 dx = \frac13</latex>
+      <alt engine="ollama:glm-ocr" confidence="0.88">\int_0^1 x^2 dx = \frac{1}{3}</alt>
+    </zone>
+    <zone id="p3-z5" type="figure" x="80" y="470" w="420" h="250" order="4" source="auto" confidence="0.93" image="Ch02/images/manuel_partie_1-image001.png"/>
+  </page>
+</pdfZones>

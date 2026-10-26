@@ -142,7 +142,7 @@ jobs:
             libmupdf-dev libqpdf-dev catch2 \
             libharfbuzz-dev libfreetype-dev libjbig2dec0-dev libopenjp2-7-dev libgumbo-dev libmujs-dev \
             libjpeg-dev zlib1g-dev libgl-dev \
-            cups printer-driver-cups-pdf
+            cups printer-driver-cups-pdf libxml2-utils
       - name: Set up CUPS-PDF queue
         run: |
           scripts/setup-cups-pdf.sh PDF

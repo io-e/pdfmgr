@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- pdfmgr operational zone XML, version 1.0 (spec A1, section 3.1).
+     Coordinates in PDF points, origin top-left of the unrotated page. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:z="urn:io-e:pdfmgr:zones:1"
+           targetNamespace="urn:io-e:pdfmgr:zones:1"
+           elementFormDefault="qualified"
+           attributeFormDefault="unqualified">
+
+  <xs:simpleType name="ZoneType">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="text"/>
+      <xs:enumeration value="title"/>
+      <xs:enumeration value="header"/>
+      <xs:enumeration value="footer"/>
+      <xs:enumeration value="page-number"/>
+      <xs:enumeration value="formula"/>
+      <xs:enumeration value="figure"/>
+      <xs:enumeration value="table"/>
+      <xs:enumeration value="caption"/>
+      <xs:enumeration value="list"/>
+      <xs:enumeration value="footnote"/>
+      <xs:enumeration value="margin-note"/>
+      <xs:enumeration value="ignore"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="Origin">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="auto"/>
+      <xs:enumeration value="manual"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="Confidence">
+    <xs:restriction base="xs:double">
+      <xs:minInclusive value="0"/>
+      <xs:maxInclusive value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="NonNegative">
+    <xs:restriction base="xs:double">
+      <xs:minInclusive value="0"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="Rotation">
+    <xs:restriction base="xs:int">
+      <xs:enumeration value="0"/>
+      <xs:enumeration value="90"/>
+      <xs:enumeration value="180"/>
+      <xs:enumeration value="270"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- One OCR candidate; a zone may hold any number from different engines. -->
+  <xs:complexType name="OcrResult">
+    <xs:simpleContent>
+      <xs:extension base="xs:string">
+        <xs:attribute name="engine" type="xs:string" use="required"/>
+        <xs:attribute name="confidence" type="z:Confidence"/>
+      </xs:extension>
+    </xs:simpleContent>
+  </xs:complexType>
+
+  <xs:attributeGroup name="MarginValues">
+    <xs:attribute name="top" type="z:NonNegative" use="required"/>
+    <xs:attribute name="bottom" type="z:NonNegative" use="required"/>
+    <xs:attribute name="left" type="z:NonNegative" use="required"/>
+    <xs:attribute name="right" type="z:NonNegative" use="required"/>
+    <xs:attribute name="origin" type="z:Origin" default="auto"/>
+    <xs:attribute name="confidence" type="z:Confidence"/>
+  </xs:attributeGroup>
+
+  <xs:complexType name="GlobalMargins">
+    <xs:attribute name="page" type="xs:string" use="required"/>
+    <xs:attributeGroup ref="z:MarginValues"/>
+  </xs:complexType>
+
+  <xs:complexType name="PageMargins">
+    <xs:attributeGroup ref="z:MarginValues"/>
+  </xs:complexType>
+
+  <xs:complexType name="Zone">
+    <xs:choice minOccurs="0" maxOccurs="unbounded">
+      <xs:element name="text" type="z:OcrResult"/>
+      <xs:element name="latex" type="z:OcrResult"/>
+      <xs:element name="alt" type="z:OcrResult"/>
+    </xs:choice>
+    <xs:attribute name="id" type="xs:string" use="required"/>
+    <xs:attribute name="type" type="z:ZoneType" use="required"/>
+    <xs:attribute name="x" type="xs:double" use="required"/>
+    <xs:attribute name="y" type="xs:double" use="required"/>
+    <xs:attribute name="w" type="z:NonNegative" use="required"/>
+    <xs:attribute name="h" type="z:NonNegative" use="required"/>
+    <xs:attribute name="order" type="xs:nonNegativeInteger" use="required"/>
+    <xs:attribute name="source" type="z:Origin" use="required"/>
+    <xs:attribute name="locked" type="xs:boolean" default="false"/>
+    <xs:attribute name="confidence" type="z:Confidence"/>
+    <xs:attribute name="lang" type="xs:string"/>
+    <xs:attribute name="chapter" type="xs:string"/>
+    <xs:attribute name="image" type="xs:string"/>
+  </xs:complexType>
+
+  <xs:complexType name="Page">
+    <xs:sequence>
+      <xs:element name="margins" type="z:PageMargins" minOccurs="0"/>
+      <xs:element name="zone" type="z:Zone" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="number" type="xs:positiveInteger" use="required"/>
+    <xs:attribute name="width" type="z:NonNegative" use="required"/>
+    <xs:attribute name="height" type="z:NonNegative" use="required"/>
+    <xs:attribute name="rotation" type="z:Rotation" default="0"/>
+  </xs:complexType>
+
+  <xs:element name="pdfZones">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="margins" type="z:GlobalMargins" minOccurs="0"/>
+        <xs:element name="page" type="z:Page" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="version" type="xs:string" use="required" fixed="1.0"/>
+      <xs:attribute name="source" type="xs:string"/>
+      <xs:attribute name="sourceSha256" type="xs:string"/>
+      <xs:attribute name="unit" type="xs:string" fixed="pt"/>
+      <xs:attribute name="generator" type="xs:string"/>
+      <xs:attribute name="created" type="xs:string"/>
+    </xs:complexType>
+    <xs:unique name="uniqueZoneId">
+      <xs:selector xpath=".//z:zone"/>
+      <xs:field xpath="@id"/>
+    </xs:unique>
+    <xs:unique name="uniquePageNumber">
+      <xs:selector xpath="z:page"/>
+      <xs:field xpath="@number"/>
+    </xs:unique>
+  </xs:element>
+</xs:schema>
